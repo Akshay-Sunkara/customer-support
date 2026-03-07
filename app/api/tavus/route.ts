@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-export async function POST() {
+export async function POST(req: Request) {
   const apiKey = process.env.TAVUS_API_KEY;
   const personaId = process.env.TAVUS_PERSONA_ID;
 
@@ -8,12 +8,15 @@ export async function POST() {
     return NextResponse.json({ error: "Missing TAVUS_API_KEY or TAVUS_PERSONA_ID" }, { status: 500 });
   }
 
+  const body = await req.json().catch(() => ({}));
+  const userName = body.userName || "there";
+
   const response = await fetch("https://tavusapi.com/v2/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
     body: JSON.stringify({
       persona_id: personaId,
-      conversational_context: `You are Ceres, a friendly avatar. Your ONLY job is to speak what you're told.
+      conversational_context: `You are Ceres, a friendly avatar. The user's name is "${userName}". Your ONLY job is to speak what you're told.
 Rules:
 - When you receive a message, say it word for word in a natural, warm tone. Do NOT add anything.
 - If you don't receive a scripted line, just say "Hmm, one moment" and wait.

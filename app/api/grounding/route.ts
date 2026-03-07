@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 
-const GROUNDING_SYSTEM_PROMPT = `You are a UI grounding engine. Identify EXACTLY ONE clickable element and return its PIXEL COORDINATES.
+const GROUNDING_SYSTEM_PROMPT = `You are a precise UI element locator. Find EXACTLY ONE element on the screen and return its PIXEL COORDINATES.
 
 RULES:
-1. Each clickable element on screen is a unique INSTANCE
-2. If multiple similar elements exist, use position/context to disambiguate
-3. ALWAYS return pixel coordinates as [x, y] integers (normalized 0-999 range)
+1. Scan the ENTIRE screen carefully — top to bottom, left to right — before answering
+2. Use visual cues: icons, text labels, colors, position relative to other elements
+3. The element may be anywhere: toolbars, sidebars, tab bars, bookmarks bars, menus, content areas, headers, footers
+4. Be PRECISE — target the CENTER of the element, not its edges
+5. Each element is a unique instance — use surrounding context to disambiguate similar elements
+6. Coordinates must be integers in normalized 0-999 range (0=top-left, 999=bottom-right)
 
 OUTPUT FORMAT (JSON ONLY):
 {
@@ -14,7 +17,7 @@ OUTPUT FORMAT (JSON ONLY):
   "element": "<short description>"
 }
 
-Return JSON ONLY.`;
+Return JSON ONLY. No explanation.`;
 
 export async function POST(req: Request) {
   const apiKey = process.env.RUNPOD_API_KEY;
@@ -25,12 +28,12 @@ export async function POST(req: Request) {
   const { screenshot, query, imgW, imgH } = await req.json();
 
   const userPrompt = query
-    ? `Find and return coordinates for: ${query}`
+    ? `Look at the entire screenshot carefully. Find this element: ${query}. Return its exact center coordinates.`
     : `Find the most prominent interactive UI element on screen.`;
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     const res = await fetch("https://api.runpod.ai/v2/qana3hao7olp53/runsync", {
       method: "POST",
