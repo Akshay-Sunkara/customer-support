@@ -369,7 +369,7 @@ export default function Home() {
           if (!audioElRef.current) {
             audioElRef.current = document.createElement("audio");
             audioElRef.current.autoplay = true;
-            audioElRef.current.playsInline = true;
+            audioElRef.current.setAttribute("playsinline", "");
             audioElRef.current.volume = 1.0;
             document.body.appendChild(audioElRef.current);
           }
