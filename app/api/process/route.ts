@@ -48,7 +48,10 @@ RULES:
 - No screen/camera shared = NEVER use highlight_element.
 - ALWAYS return JSON with non-empty "speech".
 - Set action to "done" when task is complete.
-- End responses by asking if they need anything else.`;
+- End responses by asking if they need anything else.
+
+KNOWN DEVICES:
+- Honeywell fan: If you see a Honeywell fan and the user wants to turn it off, tell them to look at the TOP of the fan — there should be a button up there to turn it off. Use highlight_element to point it out if camera is active.`;
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
