@@ -15,6 +15,7 @@ export default function Home() {
   const [messages, setMessages] = useState<{ role: "user" | "ceres"; text: string }[]>([]);
   const [showControls, setShowControls] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [cameraFacing, setCameraFacing] = useState<"environment" | "user">("environment");
 
   const avatarVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -420,21 +421,38 @@ export default function Home() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: cameraFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
       cameraStreamRef.current = stream;
       if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
       setIsCameraOn(true);
     } catch {}
-  }, [isCameraOn]);
+  }, [isCameraOn, cameraFacing]);
+
+  // --- Camera flip ---
+  const flipCamera = useCallback(async () => {
+    const newFacing = cameraFacing === "environment" ? "user" : "environment";
+    setCameraFacing(newFacing);
+    if (!isCameraOn) return;
+    // Stop current stream and start with new facing
+    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: newFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      cameraStreamRef.current = stream;
+      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+    } catch {}
+  }, [cameraFacing, isCameraOn]);
 
   // --- Start session ---
   const startSession = useCallback(async () => {
     setPhase("connecting");
     try {
       let micStream: MediaStream | null = null;
-      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
+      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); } catch {}
 
       const res = await fetch("/api/tavus", {
         method: "POST",
@@ -620,8 +638,14 @@ export default function Home() {
               window.addEventListener("touchmove", onMove, { passive: false }); window.addEventListener("touchend", onEnd);
             }}
           >
-            <div className="rounded-2xl overflow-hidden border border-white/[0.1]" style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
+            <div className="relative rounded-2xl overflow-hidden border border-white/[0.1]" style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
               <video ref={cameraVideoRef} autoPlay playsInline muted className="w-48 h-36 sm:w-64 sm:h-48 object-cover bg-black" />
+              <button
+                onClick={(e) => { e.stopPropagation(); flipCamera(); }}
+                className="absolute top-1.5 right-1.5 w-7 h-7 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/70 transition-colors cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6" /><path d="M23 20v-6h-6" /><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" /></svg>
+              </button>
             </div>
           </div>
 
@@ -706,7 +730,7 @@ export default function Home() {
             </div>
             <form className="px-3 pb-4 sm:pb-8 pt-1" onSubmit={(e) => { e.preventDefault(); const text = chatInput.trim(); if (!text) return; setChatInput(""); handleUserMessage(text); }}>
               <div className="flex items-center gap-2 bg-white/[0.05] rounded-xl px-3 py-2 border border-white/[0.05] focus-within:border-white/15 transition-colors">
-                <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..." className="flex-1 bg-transparent text-sm text-white placeholder-white/20 outline-none" />
+                <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..." className="flex-1 bg-transparent text-[16px] sm:text-sm text-white placeholder-white/20 outline-none" />
                 <button type="submit" className="w-7 h-7 flex items-center justify-center rounded-full bg-white/8 hover:bg-white/15 transition-colors cursor-pointer flex-shrink-0">
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
                 </button>
