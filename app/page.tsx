@@ -16,6 +16,8 @@ export default function Home() {
   const [showControls, setShowControls] = useState(true);
   const [cameraFacing, setCameraFacing] = useState<"environment" | "user">("environment");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceIdx, setSelectedDeviceIdx] = useState(0);
 
   const avatarVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -374,6 +376,38 @@ export default function Home() {
     } catch {}
   }, [isSharing]);
 
+  // --- Start camera with a specific deviceId or facingMode ---
+  const startCameraStream = useCallback(async (deviceId?: string) => {
+    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
+    const constraints: MediaStreamConstraints = {
+      video: deviceId
+        ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { facingMode: cameraFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    cameraStreamRef.current = stream;
+    if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+
+    // Enumerate devices after permission is granted (labels are only available after getUserMedia)
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const vids = devices.filter((d) => d.kind === "videoinput");
+    setVideoDevices(vids);
+
+    // Sync selected index to the device we just started
+    if (deviceId) {
+      const idx = vids.findIndex((d) => d.deviceId === deviceId);
+      if (idx >= 0) setSelectedDeviceIdx(idx);
+    } else {
+      const activeTrack = stream.getVideoTracks()[0];
+      const activeId = activeTrack?.getSettings?.()?.deviceId;
+      if (activeId) {
+        const idx = vids.findIndex((d) => d.deviceId === activeId);
+        if (idx >= 0) setSelectedDeviceIdx(idx);
+      }
+    }
+  }, [cameraFacing]);
+
   // --- Camera toggle ---
   const toggleCamera = useCallback(async () => {
     if (isCameraOn) {
@@ -383,31 +417,35 @@ export default function Home() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: cameraFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      cameraStreamRef.current = stream;
-      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+      await startCameraStream();
       setIsCameraOn(true);
     } catch {}
-  }, [isCameraOn, cameraFacing]);
+  }, [isCameraOn, startCameraStream]);
 
-  // --- Camera flip ---
-  const flipCamera = useCallback(async () => {
-    const newFacing = cameraFacing === "environment" ? "user" : "environment";
-    setCameraFacing(newFacing);
+  // --- Cycle to next camera device ---
+  const cycleCamera = useCallback(async () => {
     if (!isCameraOn) return;
-    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
+    if (videoDevices.length <= 1) {
+      // Fallback: flip facingMode (mobile with no device enumeration)
+      const newFacing = cameraFacing === "environment" ? "user" : "environment";
+      setCameraFacing(newFacing);
+      try {
+        if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: newFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        cameraStreamRef.current = stream;
+        if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+      } catch {}
+      return;
+    }
+    const nextIdx = (selectedDeviceIdx + 1) % videoDevices.length;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: newFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      cameraStreamRef.current = stream;
-      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+      await startCameraStream(videoDevices[nextIdx].deviceId);
+      setIsCameraOn(true);
     } catch {}
-  }, [cameraFacing, isCameraOn]);
+  }, [isCameraOn, videoDevices, selectedDeviceIdx, cameraFacing, startCameraStream]);
 
   // --- Start session ---
   const startSession = useCallback(async () => {
@@ -692,8 +730,13 @@ export default function Home() {
           >
             <div className="relative rounded-2xl overflow-hidden border border-white/[0.1]" style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
               <video ref={cameraVideoRef} autoPlay playsInline muted className="w-48 h-36 sm:w-64 sm:h-48 object-cover bg-black" />
+              {videoDevices.length > 1 && videoDevices[selectedDeviceIdx] && (
+                <div className="absolute bottom-1.5 left-1.5 right-8 px-2 py-0.5 rounded-full bg-black/60 overflow-hidden">
+                  <p className="text-[10px] text-white/50 truncate">{videoDevices[selectedDeviceIdx].label || `Camera ${selectedDeviceIdx + 1}`}</p>
+                </div>
+              )}
               <button
-                onClick={(e) => { e.stopPropagation(); flipCamera(); }}
+                onClick={(e) => { e.stopPropagation(); cycleCamera(); }}
                 className="absolute top-1.5 right-1.5 w-7 h-7 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/70 transition-colors cursor-pointer"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6" /><path d="M23 20v-6h-6" /><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" /></svg>
