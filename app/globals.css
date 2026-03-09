@@ -41,3 +41,9 @@
     box-shadow: none;
   }
 }
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+.overlay-pulse { animation: glow-pulse 2s ease-in-out infinite; }

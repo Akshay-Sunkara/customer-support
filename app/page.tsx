@@ -5,6 +5,15 @@ import Daily, { DailyCall } from "@daily-co/daily-js";
 
 type Toast = { id: number; image: string; text: string };
 
+type OverlayState = {
+  mode: "camera" | "screen";
+  query: string;
+  label: string;
+  cx: number; cy: number;         // normalized 0-1 center
+  box?: { x: number; y: number; w: number; h: number }; // normalized 0-1
+  opacity: number;
+};
+
 export default function Home() {
   const [phase, setPhase] = useState<"idle" | "connecting" | "active">("connecting");
   const [isMuted, setIsMuted] = useState(false);
@@ -16,6 +25,7 @@ export default function Home() {
   const [showControls, setShowControls] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [cameraFacing, setCameraFacing] = useState<"environment" | "user">("environment");
+  const [overlayActive, setOverlayActive] = useState(false);
 
   const avatarVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -31,6 +41,14 @@ export default function Home() {
   const draggingRef = useRef(false);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const toastIdRef = useRef(0);
+  const cameraOverlayRef = useRef<HTMLCanvasElement>(null);
+  const screenOverlayRef = useRef<HTMLCanvasElement>(null);
+  const overlayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentOverlayRef = useRef<OverlayState | null>(null);
+  const targetOverlayRef = useRef<OverlayState | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const redetectInFlightRef = useRef(false);
+  const overlayDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dialogueRef = useRef<{ role: string; text: string }[]>([]);
   const stepHistoryRef = useRef<string[]>([]);
@@ -282,6 +300,244 @@ export default function Home() {
     });
   }, []);
 
+  // --- Draw overlay on transparent canvas (live AR) ---
+  const drawOverlay = useCallback((canvas: HTMLCanvasElement, overlay: OverlayState) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Match canvas resolution to its display size
+    const rect = canvas.getBoundingClientRect();
+    if (canvas.width !== rect.width || canvas.height !== rect.height) {
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const pulse = Math.sin(performance.now() / 500) * 0.15 + 0.85;
+    const alpha = overlay.opacity * pulse;
+
+    const cw = canvas.width;
+    const ch = canvas.height;
+
+    let bx: number, by: number, bw: number, bh: number;
+    if (overlay.box) {
+      bx = overlay.box.x * cw;
+      by = overlay.box.y * ch;
+      bw = overlay.box.w * cw;
+      bh = overlay.box.h * ch;
+    } else {
+      // Fallback: small box around center point
+      const fallbackR = Math.max(cw, ch) * 0.04;
+      bx = overlay.cx * cw - fallbackR;
+      by = overlay.cy * ch - fallbackR;
+      bw = fallbackR * 2;
+      bh = fallbackR * 2;
+    }
+
+    const pad = Math.max(cw, ch) * 0.01;
+    bx -= pad; by -= pad; bw += pad * 2; bh += pad * 2;
+
+    const cornerR = Math.max(6, pad * 1.5);
+    const lineW = Math.max(2, Math.round(cw * 0.004));
+    const glowColor = `rgba(0, 255, 120, ${alpha})`;
+
+    // Multi-pass glow
+    const passes = [
+      { blur: 20, width: lineW + 4 },
+      { blur: 10, width: lineW + 2 },
+      { blur: 4, width: lineW },
+    ];
+
+    for (const pass of passes) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(bx + cornerR, by);
+      ctx.lineTo(bx + bw - cornerR, by);
+      ctx.arcTo(bx + bw, by, bx + bw, by + cornerR, cornerR);
+      ctx.lineTo(bx + bw, by + bh - cornerR);
+      ctx.arcTo(bx + bw, by + bh, bx + bw - cornerR, by + bh, cornerR);
+      ctx.lineTo(bx + cornerR, by + bh);
+      ctx.arcTo(bx, by + bh, bx, by + bh - cornerR, cornerR);
+      ctx.lineTo(bx, by + cornerR);
+      ctx.arcTo(bx, by, bx + cornerR, by, cornerR);
+      ctx.closePath();
+      ctx.strokeStyle = glowColor;
+      ctx.lineWidth = pass.width;
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = pass.blur;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Label pill
+    if (overlay.label) {
+      const fontSize = Math.max(11, Math.round(cw * 0.02));
+      ctx.save();
+      ctx.font = `600 ${fontSize}px -apple-system, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+
+      const pillCx = bx + bw / 2;
+      const labelY = by + bh + fontSize * 0.6;
+      const textWidth = ctx.measureText(overlay.label).width;
+      const padX = fontSize * 0.5;
+      const padY = fontSize * 0.3;
+      const pillW = textWidth + padX * 2;
+      const pillH = fontSize + padY * 2;
+      const pillR = pillH / 2;
+      const pillX = pillCx - pillW / 2;
+      const pillY = labelY - padY;
+
+      ctx.beginPath();
+      ctx.moveTo(pillX + pillR, pillY);
+      ctx.lineTo(pillX + pillW - pillR, pillY);
+      ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillR, pillR);
+      ctx.arcTo(pillX + pillW, pillY + pillH, pillX + pillW - pillR, pillY + pillH, pillR);
+      ctx.lineTo(pillX + pillR, pillY + pillH);
+      ctx.arcTo(pillX, pillY + pillH, pillX, pillY + pillH - pillR, pillR);
+      ctx.arcTo(pillX, pillY, pillX + pillR, pillY, pillR);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.7 * alpha})`;
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(0, 255, 120, ${0.95 * alpha})`;
+      ctx.fillText(overlay.label, pillCx, labelY);
+      ctx.restore();
+    }
+  }, []);
+
+  // --- Stop overlay tracking ---
+  const stopOverlayTracking = useCallback(() => {
+    if (overlayIntervalRef.current) { clearInterval(overlayIntervalRef.current); overlayIntervalRef.current = null; }
+    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
+    if (overlayDismissTimerRef.current) { clearTimeout(overlayDismissTimerRef.current); overlayDismissTimerRef.current = null; }
+    currentOverlayRef.current = null;
+    targetOverlayRef.current = null;
+    redetectInFlightRef.current = false;
+
+    // Clear canvases
+    const camCanvas = cameraOverlayRef.current;
+    if (camCanvas) { const ctx = camCanvas.getContext("2d"); ctx?.clearRect(0, 0, camCanvas.width, camCanvas.height); }
+    const scrCanvas = screenOverlayRef.current;
+    if (scrCanvas) { const ctx = scrCanvas.getContext("2d"); ctx?.clearRect(0, 0, scrCanvas.width, scrCanvas.height); }
+
+    setOverlayActive(false);
+  }, []);
+
+  // --- Show overlay (start tracking) ---
+  const showOverlay = useCallback((query: string, label: string, isCamera: boolean, groundingResult: { x: number; y: number; imgW: number; imgH: number; box?: { xmin: number; ymin: number; xmax: number; ymax: number } }) => {
+    // Stop any existing overlay
+    stopOverlayTracking();
+
+    const mode: "camera" | "screen" = isCamera ? "camera" : "screen";
+    const imgW = groundingResult.imgW || 1;
+    const imgH = groundingResult.imgH || 1;
+
+    const initial: OverlayState = {
+      mode,
+      query,
+      label,
+      cx: groundingResult.x / imgW,
+      cy: groundingResult.y / imgH,
+      opacity: 1,
+    };
+
+    if (groundingResult.box) {
+      initial.box = {
+        x: groundingResult.box.xmin / imgW,
+        y: groundingResult.box.ymin / imgH,
+        w: (groundingResult.box.xmax - groundingResult.box.xmin) / imgW,
+        h: (groundingResult.box.ymax - groundingResult.box.ymin) / imgH,
+      };
+    }
+
+    currentOverlayRef.current = { ...initial };
+    targetOverlayRef.current = { ...initial };
+    setOverlayActive(true);
+
+    // Animation loop
+    const animate = () => {
+      const current = currentOverlayRef.current;
+      const target = targetOverlayRef.current;
+      if (!current || !target) return;
+
+      // Lerp toward target
+      const f = 0.12;
+      current.cx += (target.cx - current.cx) * f;
+      current.cy += (target.cy - current.cy) * f;
+      current.opacity += (target.opacity - current.opacity) * f;
+      if (current.box && target.box) {
+        current.box.x += (target.box.x - current.box.x) * f;
+        current.box.y += (target.box.y - current.box.y) * f;
+        current.box.w += (target.box.w - current.box.w) * f;
+        current.box.h += (target.box.h - current.box.h) * f;
+      } else if (target.box && !current.box) {
+        current.box = { ...target.box };
+      }
+
+      const canvas = mode === "camera" ? cameraOverlayRef.current : screenOverlayRef.current;
+      if (canvas) drawOverlay(canvas, current);
+
+      animFrameRef.current = requestAnimationFrame(animate);
+    };
+    animFrameRef.current = requestAnimationFrame(animate);
+
+    // Re-detection interval
+    overlayIntervalRef.current = setInterval(async () => {
+      if (redetectInFlightRef.current) return;
+      redetectInFlightRef.current = true;
+
+      try {
+        const frameB64 = isCamera ? captureCameraFrame() : captureFrame();
+        if (!frameB64) { redetectInFlightRef.current = false; return; }
+
+        const video = isCamera ? cameraVideoRef.current : screenVideoRef.current;
+        const w = video?.videoWidth || 1280;
+        const h = video?.videoHeight || 720;
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch("/api/grounding", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ screenshot: frameB64, query, imgW: w, imgH: h, isCamera }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        const data = await res.json();
+
+        if (data.x != null && targetOverlayRef.current) {
+          const rW = data.imgW || w;
+          const rH = data.imgH || h;
+          targetOverlayRef.current.cx = data.x / rW;
+          targetOverlayRef.current.cy = data.y / rH;
+          if (data.box) {
+            targetOverlayRef.current.box = {
+              x: data.box.xmin / rW,
+              y: data.box.ymin / rH,
+              w: (data.box.xmax - data.box.xmin) / rW,
+              h: (data.box.ymax - data.box.ymin) / rH,
+            };
+          }
+          targetOverlayRef.current.opacity = 1;
+        } else if (targetOverlayRef.current) {
+          // Object not found — fade out
+          targetOverlayRef.current.opacity = 0.3;
+        }
+      } catch {
+        // Silently handle re-detection failures
+      }
+      redetectInFlightRef.current = false;
+    }, 1500);
+
+    // Auto-dismiss after 15 seconds
+    overlayDismissTimerRef.current = setTimeout(() => {
+      stopOverlayTracking();
+    }, 15000);
+  }, [stopOverlayTracking, drawOverlay, captureFrame, captureCameraFrame]);
+
   // --- Process message via Claude ---
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, screenshotOverride?: string | null) => {
     const screenshot = screenshotOverride !== undefined ? screenshotOverride : captureFrame();
@@ -332,18 +588,25 @@ export default function Home() {
 
       if (data.x != null) {
         const label = isCamera ? (actionLabel || highlightQuery) : (data.label || highlightQuery);
-        const annotated = await drawAnnotation(
-          frameB64, data.x, data.y, label,
-          data.imgW || imgW, data.imgH || imgH,
-          isCamera,
-          data.box
-        );
-        showToast(annotated, speechText || actionLabel || highlightQuery);
+        const hasLiveFeed = isCamera ? cameraOnRef.current : sharingRef.current;
+        if (hasLiveFeed) {
+          // Live AR overlay on feed
+          showOverlay(highlightQuery, label, isCamera, data);
+        } else {
+          // Fallback: toast with annotated screenshot
+          const annotated = await drawAnnotation(
+            frameB64, data.x, data.y, label,
+            data.imgW || imgW, data.imgH || imgH,
+            isCamera,
+            data.box
+          );
+          showToast(annotated, speechText || actionLabel || highlightQuery);
+        }
       }
     } catch (e) {
       console.warn("[highlight] Failed:", e);
     }
-  }, [drawAnnotation, showToast]);
+  }, [drawAnnotation, showToast, showOverlay]);
 
   // --- Handle user message ---
   const handleUserMessage = useCallback(async (text: string) => {
@@ -402,6 +665,7 @@ export default function Home() {
   // --- Screen share toggle ---
   const toggleScreenShare = useCallback(async () => {
     if (isSharing) {
+      if (currentOverlayRef.current?.mode === "screen") stopOverlayTracking();
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
@@ -416,11 +680,12 @@ export default function Home() {
       stream.getVideoTracks()[0].onended = () => { screenStreamRef.current = null; setIsSharing(false); };
       setIsSharing(true);
     } catch {}
-  }, [isSharing]);
+  }, [isSharing, stopOverlayTracking]);
 
   // --- Camera toggle ---
   const toggleCamera = useCallback(async () => {
     if (isCameraOn) {
+      if (currentOverlayRef.current?.mode === "camera") stopOverlayTracking();
       if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
       setIsCameraOn(false);
@@ -435,10 +700,11 @@ export default function Home() {
       if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
       setIsCameraOn(true);
     } catch {}
-  }, [isCameraOn, cameraFacing]);
+  }, [isCameraOn, cameraFacing, stopOverlayTracking]);
 
   // --- Camera flip ---
   const flipCamera = useCallback(async () => {
+    stopOverlayTracking();
     const newFacing = cameraFacing === "environment" ? "user" : "environment";
     setCameraFacing(newFacing);
     if (!isCameraOn) return;
@@ -452,7 +718,7 @@ export default function Home() {
       cameraStreamRef.current = stream;
       if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
     } catch {}
-  }, [cameraFacing, isCameraOn]);
+  }, [cameraFacing, isCameraOn, stopOverlayTracking]);
 
   // --- Start session ---
   const startSession = useCallback(async () => {
@@ -557,6 +823,9 @@ export default function Home() {
   // Cleanup
   useEffect(() => {
     return () => {
+      if (overlayIntervalRef.current) clearInterval(overlayIntervalRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (overlayDismissTimerRef.current) clearTimeout(overlayDismissTimerRef.current);
       if (callRef.current) { callRef.current.leave().catch(() => {}); callRef.current.destroy(); }
       if (conversationIdRef.current) { fetch("/api/tavus-end", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversationIdRef.current }) }).catch(() => {}); }
       if (screenStreamRef.current) screenStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -592,6 +861,7 @@ export default function Home() {
   }, []);
 
   const endSession = useCallback(() => {
+    stopOverlayTracking();
     taskActiveRef.current = false;
     if (continueResolveRef.current) { continueResolveRef.current(); continueResolveRef.current = null; }
     if (callRef.current) { callRef.current.leave().catch(() => {}); callRef.current.destroy(); callRef.current = null; }
@@ -604,7 +874,7 @@ export default function Home() {
     if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
     if (muteDebounceRef.current) { clearTimeout(muteDebounceRef.current); muteDebounceRef.current = null; }
     setMessages([]); setToasts([]); setIsSharing(false); setIsCameraOn(false); setChatOpen(false); setPhase("idle");
-  }, []);
+  }, [stopOverlayTracking]);
 
   // Voice input from Tavus
   useEffect(() => {
@@ -689,7 +959,24 @@ export default function Home() {
       {phase === "active" && (
         <>
           <video ref={avatarVideoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover animate-fade-in" />
+
+          {/* Screen video — always hidden (used for frame capture only) */}
           <video ref={screenVideoRef} autoPlay playsInline muted className="hidden" />
+
+          {/* Screen overlay — fullscreen transparent canvas for AR annotations when sharing */}
+          {isSharing && (
+            <>
+              <canvas ref={screenOverlayRef} className="absolute inset-0 w-full h-full pointer-events-none z-10" />
+              {overlayActive && currentOverlayRef.current?.mode === "screen" && (
+                <button
+                  onClick={stopOverlayTracking}
+                  className="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/80 transition-colors cursor-pointer z-20"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              )}
+            </>
+          )}
 
           {/* Camera PiP — draggable */}
           <div
@@ -717,6 +1004,15 @@ export default function Home() {
           >
             <div className="relative rounded-2xl overflow-hidden border border-white/[0.1]" style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
               <video ref={cameraVideoRef} autoPlay playsInline muted className="w-48 h-36 sm:w-64 sm:h-48 object-cover bg-black" />
+              <canvas ref={cameraOverlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+              {overlayActive && currentOverlayRef.current?.mode === "camera" && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); stopOverlayTracking(); }}
+                  className="absolute top-1.5 left-1.5 w-6 h-6 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/80 transition-colors cursor-pointer z-10"
+                >
+                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              )}
               <button
                 onClick={(e) => { e.stopPropagation(); flipCamera(); }}
                 className="absolute top-1.5 right-1.5 w-7 h-7 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/70 transition-colors cursor-pointer"
