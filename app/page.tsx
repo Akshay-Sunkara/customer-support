@@ -617,6 +617,17 @@ export default function Home() {
             return;
           }
 
+          // Immediately send an echo to interrupt Tavus's own LLM before it can parrot the user
+          const convId = conversationIdRef.current;
+          if (call && convId) {
+            call.sendAppMessage({
+              message_type: "conversation",
+              event_type: "conversation.echo",
+              conversation_id: convId,
+              properties: { text: " " },
+            }, "*");
+          }
+
           handleUserMessage(text);
         }
       } catch {}
