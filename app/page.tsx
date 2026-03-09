@@ -84,28 +84,21 @@ export default function Home() {
     }, 12000);
   }, []);
 
-  // --- Echo detection ---
-  const isLikelyEcho = useCallback((utterance: string, avatarText: string): boolean => {
-    if (!avatarText) return false;
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-    const utteranceWords = normalize(utterance);
-    const avatarWords = normalize(avatarText);
-    if (utteranceWords.length === 0 || avatarWords.length === 0) return false;
-    const avatarWordSet = new Set(avatarWords);
-    const matchCount = utteranceWords.filter((w) => avatarWordSet.has(w)).length;
-    return matchCount / utteranceWords.length > 0.5;
-  }, []);
-
   // --- Tavus echo ---
   const tellTavus = useCallback((text: string) => {
     const call = callRef.current;
     const convId = conversationIdRef.current;
     if (!call || !convId) return;
 
-    // Mark avatar as speaking and track text for echo detection
+    // Mark avatar as speaking
     avatarSpeakingRef.current = true;
     lastAvatarTextRef.current = text;
     if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+
+    // Mute mic while avatar speaks to prevent echo pickup (especially on mobile)
+    if (!isMutedRef.current) {
+      call.setLocalAudio(false);
+    }
 
     // Estimate speaking duration: ~150ms per word + 1.5s buffer
     const wordCount = text.split(/\s+/).length;
@@ -113,7 +106,11 @@ export default function Home() {
     avatarSpeakingTimerRef.current = setTimeout(() => {
       avatarSpeakingRef.current = false;
       lastAvatarTextRef.current = "";
-      console.log("[tavus] Avatar done speaking (timeout)");
+      // Restore mic unless user explicitly muted
+      if (!isMutedRef.current && callRef.current) {
+        callRef.current.setLocalAudio(true);
+      }
+      console.log("[tavus] Avatar done speaking, mic restored");
     }, speakingDuration);
 
     call.sendAppMessage({
@@ -644,7 +641,11 @@ export default function Home() {
           avatarSpeakingTimerRef.current = setTimeout(() => {
             avatarSpeakingRef.current = false;
             lastAvatarTextRef.current = "";
-            console.log("[tavus] Avatar utterance complete");
+            // Restore mic unless user explicitly muted
+            if (!isMutedRef.current && callRef.current) {
+              callRef.current.setLocalAudio(true);
+            }
+            console.log("[tavus] Avatar utterance complete, mic restored");
           }, 1500); // 1.5s cooldown for echo tail
           return;
         }
@@ -653,23 +654,10 @@ export default function Home() {
           const text = msg.properties.speech || "";
           if (!text) return;
 
-          // Reject utterances while muted
-          if (isMutedRef.current) {
-            console.log("[voice] Rejected (muted):", text.slice(0, 50));
+          // Reject utterances while muted or avatar is speaking (mic should be off, but reject any leakage)
+          if (isMutedRef.current || avatarSpeakingRef.current) {
+            console.log("[voice] Rejected (" + (isMutedRef.current ? "muted" : "avatar speaking") + "):", text.slice(0, 50));
             return;
-          }
-
-          // During avatar speech: filter echo but allow genuine interruptions
-          if (avatarSpeakingRef.current) {
-            if (isLikelyEcho(text, lastAvatarTextRef.current)) {
-              console.log("[voice] Rejected (echo):", text.slice(0, 50));
-              return;
-            }
-            // Genuine interruption — clear avatar speaking state
-            console.log("[voice] Interruption detected:", text.slice(0, 50));
-            avatarSpeakingRef.current = false;
-            lastAvatarTextRef.current = "";
-            if (avatarSpeakingTimerRef.current) { clearTimeout(avatarSpeakingTimerRef.current); avatarSpeakingTimerRef.current = null; }
           }
 
           // Immediately send an echo to interrupt Tavus's own LLM before it can parrot the user
@@ -689,7 +677,7 @@ export default function Home() {
     };
     call.on("app-message", handler);
     return () => { call.off("app-message", handler); };
-  }, [phase, handleUserMessage, isLikelyEcho]);
+  }, [phase, handleUserMessage]);
 
   return (
     <div className="h-dvh w-full bg-[#080808] relative overflow-hidden">
