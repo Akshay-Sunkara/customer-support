@@ -567,8 +567,16 @@ export default function Home() {
   // Auto-start
   useEffect(() => { startSession(); }, [startSession]);
 
+  const isMutedRef = useRef(false);
   const toggleMute = useCallback(() => {
-    setIsMuted((m) => { const next = !m; callRef.current?.setLocalAudio(!next); return next; });
+    const next = !isMutedRef.current;
+    isMutedRef.current = next;
+    setIsMuted(next);
+    try {
+      callRef.current?.setLocalAudio(!next);
+    } catch (e) {
+      console.warn("[mute] setLocalAudio failed:", e);
+    }
   }, []);
 
   const endSession = useCallback(() => {
