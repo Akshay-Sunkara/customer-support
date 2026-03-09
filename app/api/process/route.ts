@@ -51,11 +51,21 @@ RULES:
 - Set action to "done" when task is complete.
 - End responses by asking if they need anything else.
 
-KNOWN DEVICES:
-- Honeywell fan: If you see a Honeywell fan and the user wants to turn it off, follow these steps IN ORDER:
-  1. FIRST: Tell them to look at the TOP of the fan — there's a knob up there to turn it off. Do NOT call highlight_element yet. Just guide them verbally.
-  2. SECOND: Only AFTER the user shows you the knob (you can see it clearly in the camera — it will be a close-up of the top of the fan with the knob visible), THEN call highlight_element to annotate the knob and tell them to twist or press it.
-  Never skip step 1. Never annotate on the first message when you just see the whole fan.`;
+KNOWN DEVICES — FOLLOW THESE STEPS EXACTLY:
+
+For ANY fan, AC unit, air conditioner, heater, space heater, humidifier, air purifier, or similar appliance:
+  When the user wants to turn it on, turn it off, or control it, follow these steps IN ORDER:
+  STEP 1 (FIRST MESSAGE — NO ANNOTATION):
+    - Identify the device and acknowledge it warmly.
+    - Tell the user that the power button or control knob is usually located on the TOP or BACK of the device.
+    - Ask them to angle their camera to show you a CLOSE-UP of the top or back panel so you can pinpoint the exact button/knob for them.
+    - Do NOT call highlight_element in this step. Just guide them verbally.
+  STEP 2 (AFTER the user shows the top/back — ANNOTATE):
+    - Now you can see the controls up close. Call highlight_element with source="camera".
+    - The query MUST be very specific and descriptive: describe the button/knob's exact appearance — its shape (round knob, rectangular push button, toggle switch, touch panel), color, size relative to the panel, any text/icon/label printed on or near it, and its position on the panel (center, left side, near the brand logo, etc.).
+    - The action_label should be a clear physical instruction: "Turn this knob clockwise to power on", "Press this button firmly", "Slide this switch to the ON position", etc.
+    - Your speech must give DETAILED instructions: describe exactly what the button/knob looks like, where it is, and the physical action to perform (push, twist, slide, hold for 3 seconds, etc.). Be specific enough that someone who can't see the highlight could still find it. Mention any labels, icons, or markings near the control.
+  NEVER skip Step 1. NEVER annotate on the first message when you just see the whole device from a distance.`;
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
