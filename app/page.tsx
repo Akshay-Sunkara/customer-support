@@ -6,7 +6,7 @@ import Daily, { DailyCall } from "@daily-co/daily-js";
 type Annotation = { id: number; image: string; label: string; instruction: string };
 
 export default function Home() {
-  const [phase, setPhase] = useState<"idle" | "connecting" | "active">("connecting");
+  const [phase, setPhase] = useState<"idle" | "connecting" | "active">("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
@@ -412,25 +412,26 @@ export default function Home() {
   // --- Start session ---
   const startSession = useCallback(async () => {
     setPhase("connecting");
-    try {
-      let micStream: MediaStream | null = null;
-      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); } catch {}
 
-      const res = await fetch("/api/tavus", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userName: "" }),
+    // Connection timeout — fall back to idle if avatar never connects
+    const connectionTimeout = setTimeout(() => {
+      setPhase((cur) => {
+        if (cur === "connecting") {
+          console.warn("[session] Connection timed out");
+          // Clean up partial state
+          if (callRef.current) { try { callRef.current.leave(); callRef.current.destroy(); } catch {} callRef.current = null; }
+          if (conversationIdRef.current) {
+            fetch("/api/tavus-end", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conversationIdRef.current }) }).catch(() => {});
+            conversationIdRef.current = null;
+          }
+          return "idle";
+        }
+        return cur;
       });
-      const data = await res.json();
-      if (data.error) { micStream?.getTracks().forEach((t) => t.stop()); setPhase("idle"); return; }
+    }, 30000);
 
-      conversationIdRef.current = data.conversation_id;
-      const url = data.conversation_url;
-      if (!url) { micStream?.getTracks().forEach((t) => t.stop()); setPhase("idle"); return; }
-
-      micStream?.getTracks().forEach((t) => t.stop());
-
-      // Get mic with echo cancellation constraints
+    try {
+      // Get mic — single request, triggered by user tap so permissions work on mobile
       let audioSource: MediaStreamTrack | boolean = true;
       try {
         const micStream = await navigator.mediaDevices.getUserMedia({
@@ -438,14 +439,31 @@ export default function Home() {
         });
         audioSource = micStream.getAudioTracks()[0] || true;
       } catch (e) {
-        console.warn("[mic] Failed to get constrained audio, falling back:", e);
+        console.warn("[mic] Failed to get audio, falling back to default:", e);
       }
+
+      const res = await fetch("/api/tavus", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userName: "" }),
+      });
+      const data = await res.json();
+      if (data.error) { if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
+
+      conversationIdRef.current = data.conversation_id;
+      const url = data.conversation_url;
+      if (!url) { if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
+
       const call = Daily.createCallObject({ videoSource: false, audioSource });
       callRef.current = call;
 
       call.on("track-started", (event: any) => {
         if (event.participant?.local) return;
-        if (event.track.kind === "video") { pendingVideoTrackRef.current = event.track; setPhase("active"); }
+        if (event.track.kind === "video") {
+          clearTimeout(connectionTimeout);
+          pendingVideoTrackRef.current = event.track;
+          setPhase("active");
+        }
         if (event.track.kind === "audio") {
           if (!audioElRef.current) {
             audioElRef.current = document.createElement("audio");
@@ -481,6 +499,7 @@ export default function Home() {
       await call.join({ url });
       call.setLocalAudio(true);
     } catch {
+      clearTimeout(connectionTimeout);
       setPhase("idle");
     }
   }, []);
@@ -520,8 +539,7 @@ export default function Home() {
     };
   }, []);
 
-  // Auto-start
-  useEffect(() => { startSession(); }, [startSession]);
+  // No auto-start — user must tap to begin (required for mobile mic/WebRTC permissions)
 
   const isMutedRef = useRef(false);
   const toggleMute = useCallback(() => {
