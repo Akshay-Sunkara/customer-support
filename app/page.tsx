@@ -253,9 +253,11 @@ export default function Home() {
   }, []);
 
   // --- Process message via Claude ---
-  const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, screenshotOverride?: string | null) => {
+  const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, screenshotOverride?: string | null, cameraFrameOverride?: string | null) => {
     const screenshot = screenshotOverride !== undefined ? screenshotOverride : captureFrame();
-    const cameraFrame = captureCameraFrame();
+    const cameraFrame = cameraFrameOverride !== undefined ? cameraFrameOverride : captureCameraFrame();
+
+    console.log("[processMessage] hasScreenshot:", !!screenshot, "hasCameraFrame:", !!cameraFrame, "cameraOn:", cameraOnRef.current);
 
     const res = await fetch("/api/process", {
       method: "POST",
@@ -322,7 +324,8 @@ export default function Home() {
     try {
       const screenshot = captureFrame();
       const cameraFrame = captureCameraFrame();
-      const response = await processMessage(text, taskActiveRef.current, screenshot);
+      console.log("[handleUserMessage] screenshot:", !!screenshot, "cameraFrame:", !!cameraFrame, "cameraOn:", cameraOnRef.current, "source:", "voice/chat");
+      const response = await processMessage(text, taskActiveRef.current, screenshot, cameraFrame);
       if (!response) { processingRef.current = false; return; }
 
       if (response.speech) tellTavus(response.speech);
