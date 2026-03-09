@@ -71,8 +71,13 @@ const HIGHLIGHT_TOOL = {
         type: "string" as const,
         description: "Short instruction for the user (shown as tooltip on the annotation). Screen examples: 'Click here', 'Tap this button', 'Select this option'. Camera examples: 'Press this button', 'Plug in here', 'This is your water bottle'. Keep under 8 words.",
       },
+      source: {
+        type: "string" as const,
+        enum: ["screen", "camera"],
+        description: "Which input to highlight on. Use 'screen' for UI elements visible in the screen share. Use 'camera' for physical objects visible in the camera feed.",
+      },
     },
-    required: ["query", "action_label"],
+    required: ["query", "action_label", "source"],
   },
 };
 
@@ -121,18 +126,32 @@ export async function POST(req: Request) {
     ? "\nThis is a follow-up step. Give the next action based on the CURRENT screen."
     : "";
 
-  const screenNote = hasScreen ? "" : "\n[No screen shared] — Respond conversationally. You cannot see the screen.";
-  const cameraNote = hasCamera ? "\n[Camera shared] — The user is sharing their camera. You can see what they're showing you." : "";
+  const screenNote = hasScreen ? "" : "\n[No screen shared] — You cannot see the screen.";
+  const cameraNote = hasCamera
+    ? hasScreen
+      ? "\n[Camera AND screen shared] — You have TWO images: the first is the screen share, the second is the camera feed. When using highlight_element, set source to 'screen' for UI elements or 'camera' for physical objects."
+      : "\n[Camera shared] — The user is sharing their camera. You can see what they're showing you. Use source='camera' when highlighting."
+    : "";
   const nameNote = userName && userName !== "there" ? `\nThe user's name is "${userName}". Use it naturally (not every message).` : "";
 
   const content: any[] = [];
-  if (hasScreen) {
+  if (hasScreen && hasCamera) {
+    content.push({ type: "text", text: "[IMAGE 1: Screen share]" });
     content.push({
       type: "image",
       source: { type: "base64", media_type: "image/jpeg", data: screenshot },
     });
-  }
-  if (hasCamera) {
+    content.push({ type: "text", text: "[IMAGE 2: Camera feed]" });
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: cameraFrame },
+    });
+  } else if (hasScreen) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: screenshot },
+    });
+  } else if (hasCamera) {
     content.push({
       type: "image",
       source: { type: "base64", media_type: "image/jpeg", data: cameraFrame },
@@ -174,6 +193,7 @@ export async function POST(req: Request) {
     let done = false;
     let highlightQuery: string | null = null;
     let actionLabel: string | null = null;
+    let highlightSource: "screen" | "camera" | null = null;
 
     // Check if Claude called the highlight tool
     let toolUseBlock: any = null;
@@ -195,6 +215,7 @@ export async function POST(req: Request) {
       } else if (block.type === "tool_use" && block.name === "highlight_element") {
         highlightQuery = block.input?.query || null;
         actionLabel = block.input?.action_label || null;
+        highlightSource = block.input?.source || null;
         toolUseBlock = block;
       }
     }
@@ -259,12 +280,18 @@ export async function POST(req: Request) {
 
     console.log("[process] Result — highlightQuery:", highlightQuery, "actionLabel:", actionLabel, "speech:", speech?.slice(0, 80));
 
+    // Infer source if Claude didn't specify: default based on what's available
+    if (highlightQuery && !highlightSource) {
+      highlightSource = hasCamera && !hasScreen ? "camera" : "screen";
+    }
+
     return NextResponse.json({
       speech: speech || "I can see your screen! Let me help you with that.",
       action,
       done,
       highlightQuery,
       actionLabel,
+      highlightSource,
     });
   } catch (e) {
     console.error("[process] Error:", e);

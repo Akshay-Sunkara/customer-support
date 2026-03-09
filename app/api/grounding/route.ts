@@ -21,7 +21,7 @@ OUTPUT FORMAT (JSON ONLY):
 
 Return JSON ONLY. No explanation.`;
 
-async function groundUI(screenshot: string, query: string, imgW: number, imgH: number) {
+async function groundUI(screenshot: string, query: string) {
   const apiKey = process.env.RUNPOD_API_KEY;
   if (!apiKey) return null;
 
@@ -69,57 +69,54 @@ async function groundUI(screenshot: string, query: string, imgW: number, imgH: n
 
   if (!text) return null;
 
-  // Parse normalized 0-999 coords
+  // Parse normalized 0-999 coords → normalize to 0-1
   const coordPattern = /"coordinate":\s*\[(\d+),\s*(\d+)\]/;
   const coordMatch = text.match(coordPattern);
   if (coordMatch) {
-    const x = Math.round((parseInt(coordMatch[1]) / 999) * (imgW || 1920));
-    const y = Math.round((parseInt(coordMatch[2]) / 999) * (imgH || 1080));
+    const cx = parseInt(coordMatch[1]) / 999;
+    const cy = parseInt(coordMatch[2]) / 999;
     const elemMatch = text.match(/"element":\s*"([^"]+)"/);
-    return { x, y, label: elemMatch ? elemMatch[1].slice(0, 60) : query || "Here", imgW: imgW || 1920, imgH: imgH || 1080 };
+    return { cx, cy, label: elemMatch ? elemMatch[1].slice(0, 60) : query || "Here" };
   }
 
   const genericMatch = text.match(/\[(\d+),\s*(\d+)\]/);
   if (genericMatch) {
-    const x = Math.round((parseInt(genericMatch[1]) / 999) * (imgW || 1920));
-    const y = Math.round((parseInt(genericMatch[2]) / 999) * (imgH || 1080));
-    return { x, y, label: query || "Here", imgW: imgW || 1920, imgH: imgH || 1080 };
+    const cx = parseInt(genericMatch[1]) / 999;
+    const cy = parseInt(genericMatch[2]) / 999;
+    return { cx, cy, label: query || "Here" };
   }
 
   return null;
 }
 
-// --- Camera grounding: Grounding DINO (primary) + Claude Vision (fallback) ---
+// --- Camera grounding via Grounding DINO (HuggingFace) ---
 
 async function groundCamera(imageB64: string, query: string, imgW: number, imgH: number) {
-  // Try Grounding DINO first
-  const dinoResult = await groundCameraDINO(imageB64, query, imgW, imgH);
-  if (dinoResult) return dinoResult;
-
-  // Fallback to Claude Vision
-  return groundCameraVision(imageB64, query, imgW, imgH);
-}
-
-// --- Grounding DINO via HuggingFace Inference API ---
-
-async function groundCameraDINO(imageB64: string, query: string, imgW: number, imgH: number) {
   const hfToken = process.env.HF_TOKEN;
-  const model = "IDEA-Research/grounding-dino-tiny";
-  const url = `https://api-inference.huggingface.co/models/${model}`;
+  if (!hfToken) return null;
+
+  // Grounding DINO expects simple label queries — extract the core noun
+  const label = query.replace(/^(the|a|an)\s+/i, "").split(/[,.]/).map(s => s.trim()).filter(Boolean).join(". ") + ".";
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
+  const timeout = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch("https://api-inference.huggingface.co/models/IDEA-Research/grounding-dino-base", {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${hfToken}`,
+      },
       body: JSON.stringify({
-        inputs: { image: `data:image/jpeg;base64,${imageB64}` },
-        parameters: { candidate_labels: [query] },
+        inputs: {
+          image: `data:image/jpeg;base64,${imageB64}`,
+          text: label,
+        },
+        parameters: {
+          box_threshold: 0.25,
+          text_threshold: 0.2,
+        },
       }),
       signal: controller.signal,
     });
@@ -127,108 +124,111 @@ async function groundCameraDINO(imageB64: string, query: string, imgW: number, i
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      console.warn("[camera-grounding] DINO API error:", res.status, errText.slice(0, 200));
-      return null;
+      console.warn("[gdino] API error:", res.status, errText.slice(0, 300));
+
+      // Fallback: try alternate request format
+      return await groundCameraDinoAlt(imageB64, label, imgW, imgH);
     }
 
     const data = await res.json();
-    console.log("[camera-grounding] DINO response:", JSON.stringify(data).slice(0, 500));
+    console.log("[gdino] Response:", JSON.stringify(data).slice(0, 500));
 
-    // HF returns array of { label, score, box: { xmin, ymin, xmax, ymax } }
-    if (Array.isArray(data) && data.length > 0) {
-      // Pick highest confidence detection
-      const best = data.reduce((a: any, b: any) => (b.score > a.score ? b : a), data[0]);
-      const box = best.box;
-      const x = Math.round((box.xmin + box.xmax) / 2);
-      const y = Math.round((box.ymin + box.ymax) / 2);
-      console.log("[camera-grounding] DINO best:", best.label, "score:", best.score, "box:", box, "center:", x, y);
-      return {
-        x, y,
-        box: { xmin: Math.round(box.xmin), ymin: Math.round(box.ymin), xmax: Math.round(box.xmax), ymax: Math.round(box.ymax) },
-        label: best.label || query,
-        imgW, imgH,
-      };
-    }
-
-    console.log("[camera-grounding] DINO: no detections");
-    return null;
+    return parseDinoResponse(data, imgW, imgH, query);
   } catch (e) {
     clearTimeout(timeout);
-    console.warn("[camera-grounding] DINO failed:", e);
+    console.warn("[gdino] Failed:", e);
     return null;
   }
 }
 
-// --- Claude Vision fallback for camera grounding ---
-
-async function groundCameraVision(imageB64: string, query: string, imgW: number, imgH: number) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
+// Alternate request format for Grounding DINO
+async function groundCameraDinoAlt(imageB64: string, label: string, imgW: number, imgH: number) {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) return null;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    // Send raw image bytes with candidate_labels
+    const imageBuffer = Buffer.from(imageB64, "base64");
+    const res = await fetch("https://api-inference.huggingface.co/models/IDEA-Research/grounding-dino-base", {
       method: "POST",
       headers: {
+        Authorization: `Bearer ${hfToken}`,
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 500,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imageB64 } },
-            { type: "text", text: `You are a precise object locator. Find the EXACT bounding box and center of this element: "${query}"
-
-Image: ${imgW}x${imgH}px. (0,0)=top-left. Front-facing camera (NOT mirrored): person's RIGHT side = LEFT of image (low x), person's LEFT side = RIGHT of image (high x).
-
-Steps:
-1. Find the element
-2. Determine its bounding box edges (left x, right x, top y, bottom y)
-3. Center = ((left+right)/2, (top+bottom)/2)
-
-Return JSON ONLY:
-{"x": <int>, "y": <int>, "box": {"xmin": <int>, "ymin": <int>, "xmax": <int>, "ymax": <int>}, "label": "<description>"}` },
-          ],
-        }],
+        image: `data:image/jpeg;base64,${imageB64}`,
+        candidate_labels: [label.replace(/\./g, " ").trim()],
       }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
-    const data = await res.json();
-    const text = data.content?.[0]?.text || "";
-    console.log("[camera-grounding] Vision response:", text.slice(0, 400));
-
-    // Try to parse box format
-    const boxMatch = text.match(/"xmin"\s*:\s*(\d+)[\s\S]*?"ymin"\s*:\s*(\d+)[\s\S]*?"xmax"\s*:\s*(\d+)[\s\S]*?"ymax"\s*:\s*(\d+)/);
-    const centerMatch = text.match(/"x"\s*:\s*(\d+)[\s\S]*?"y"\s*:\s*(\d+)/);
-    const labelMatch = text.match(/"label"\s*:\s*"([^"]*)"/);
-
-    if (centerMatch) {
-      const result: any = {
-        x: parseInt(centerMatch[1]),
-        y: parseInt(centerMatch[2]),
-        label: labelMatch ? labelMatch[1] : query,
-        imgW, imgH,
-      };
-      if (boxMatch) {
-        result.box = {
-          xmin: parseInt(boxMatch[1]), ymin: parseInt(boxMatch[2]),
-          xmax: parseInt(boxMatch[3]), ymax: parseInt(boxMatch[4]),
-        };
-      }
-      return result;
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.warn("[gdino-alt] API error:", res.status, errText.slice(0, 300));
+      return null;
     }
-  } catch {
+
+    const data = await res.json();
+    console.log("[gdino-alt] Response:", JSON.stringify(data).slice(0, 500));
+
+    return parseDinoResponse(data, imgW, imgH, label);
+  } catch (e) {
     clearTimeout(timeout);
+    console.warn("[gdino-alt] Failed:", e);
+    return null;
   }
-  return null;
+}
+
+// Parse Grounding DINO response into normalized 0-1 coordinates
+function parseDinoResponse(data: any, imgW: number, imgH: number, query: string) {
+  // HF returns array of detections: [{box: {xmin, ymin, xmax, ymax}, score, label}]
+  const items = Array.isArray(data) ? data : data?.results || data?.detections || [];
+
+  if (!items.length) {
+    console.warn("[gdino] No detections");
+    return null;
+  }
+
+  // Pick highest confidence detection
+  let best = items[0];
+  for (const item of items) {
+    if ((item.score || 0) > (best.score || 0)) best = item;
+  }
+
+  const box = best.box || best.bbox;
+  if (!box) {
+    console.warn("[gdino] No box in detection:", best);
+    return null;
+  }
+
+  // box format: {xmin, ymin, xmax, ymax} in pixel coords
+  const xmin = box.xmin ?? box.x1 ?? box[0] ?? 0;
+  const ymin = box.ymin ?? box.y1 ?? box[1] ?? 0;
+  const xmax = box.xmax ?? box.x2 ?? box[2] ?? 0;
+  const ymax = box.ymax ?? box.y2 ?? box[3] ?? 0;
+
+  const result = {
+    cx: ((xmin + xmax) / 2) / imgW,
+    cy: ((ymin + ymax) / 2) / imgH,
+    box: {
+      x: xmin / imgW,
+      y: ymin / imgH,
+      w: (xmax - xmin) / imgW,
+      h: (ymax - ymin) / imgH,
+    },
+    label: best.label || query || "Here",
+  };
+
+  console.log("[gdino] Parsed:", {
+    cx: result.cx.toFixed(3), cy: result.cy.toFixed(3),
+    box: result.box, score: best.score, label: result.label,
+  });
+
+  return result;
 }
 
 // --- Main route ---
@@ -237,12 +237,9 @@ export async function POST(req: Request) {
   const { screenshot, query, imgW, imgH, isCamera } = await req.json();
 
   try {
-    let result;
-    if (isCamera) {
-      result = await groundCamera(screenshot, query, imgW || 1280, imgH || 720);
-    } else {
-      result = await groundUI(screenshot, query, imgW || 1920, imgH || 1080);
-    }
+    const result = isCamera
+      ? await groundCamera(screenshot, query, imgW || 1280, imgH || 720)
+      : await groundUI(screenshot, query);
 
     if (result) return NextResponse.json(result);
     return NextResponse.json({});
