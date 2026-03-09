@@ -44,7 +44,8 @@ export default function Home() {
   const cameraOnRef = useRef(false);
   const avatarSpeakingRef = useRef(false);
   const avatarSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastEchoRef = useRef("");
+  const lastAvatarTextRef = useRef("");
+  const muteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
   useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
@@ -83,22 +84,36 @@ export default function Home() {
     }, 12000);
   }, []);
 
+  // --- Echo detection ---
+  const isLikelyEcho = useCallback((utterance: string, avatarText: string): boolean => {
+    if (!avatarText) return false;
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+    const utteranceWords = normalize(utterance);
+    const avatarWords = normalize(avatarText);
+    if (utteranceWords.length === 0 || avatarWords.length === 0) return false;
+    const avatarWordSet = new Set(avatarWords);
+    const matchCount = utteranceWords.filter((w) => avatarWordSet.has(w)).length;
+    return matchCount / utteranceWords.length > 0.5;
+  }, []);
+
   // --- Tavus echo ---
   const tellTavus = useCallback((text: string) => {
     const call = callRef.current;
     const convId = conversationIdRef.current;
     if (!call || !convId) return;
 
-    // Mark avatar as speaking so we ignore mic pickup of its own voice
+    // Mark avatar as speaking and track text for echo detection
     avatarSpeakingRef.current = true;
-    lastEchoRef.current = text.toLowerCase().trim();
+    lastAvatarTextRef.current = text;
     if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
-    // Estimate speaking duration: ~120ms per word, minimum 3s, max 15s
+
+    // Estimate speaking duration: ~150ms per word + 1.5s buffer
     const wordCount = text.split(/\s+/).length;
-    const speakingDuration = Math.min(15000, Math.max(3000, wordCount * 120));
+    const speakingDuration = Math.min(15000, Math.max(3000, wordCount * 150 + 1500));
     avatarSpeakingTimerRef.current = setTimeout(() => {
       avatarSpeakingRef.current = false;
-      lastEchoRef.current = "";
+      lastAvatarTextRef.current = "";
+      console.log("[tavus] Avatar done speaking (timeout)");
     }, speakingDuration);
 
     call.sendAppMessage({
@@ -484,7 +499,17 @@ export default function Home() {
 
       micStream?.getTracks().forEach((t) => t.stop());
 
-      const call = Daily.createCallObject({ videoSource: false, audioSource: true });
+      // Get mic with echo cancellation constraints
+      let audioSource: MediaStreamTrack | boolean = true;
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+        audioSource = micStream.getAudioTracks()[0] || true;
+      } catch (e) {
+        console.warn("[mic] Failed to get constrained audio, falling back:", e);
+      }
+      const call = Daily.createCallObject({ videoSource: false, audioSource });
       callRef.current = call;
 
       call.on("track-started", (event: any) => {
@@ -569,14 +594,25 @@ export default function Home() {
 
   const isMutedRef = useRef(false);
   const toggleMute = useCallback(() => {
+    // Debounce rapid toggles (300ms)
+    if (muteDebounceRef.current) return;
+    muteDebounceRef.current = setTimeout(() => { muteDebounceRef.current = null; }, 300);
+
     const next = !isMutedRef.current;
     isMutedRef.current = next;
     setIsMuted(next);
     try {
       callRef.current?.setLocalAudio(!next);
+      // Verify actual state and force correction on mismatch
+      const actual = callRef.current?.localAudio();
+      if (actual === next) {
+        console.warn("[mute] State mismatch, forcing:", next ? "muted" : "unmuted");
+        callRef.current?.setLocalAudio(!next);
+      }
     } catch (e) {
       console.warn("[mute] setLocalAudio failed:", e);
     }
+    console.log("[mute]", next ? "Muted" : "Unmuted");
   }, []);
 
   const endSession = useCallback(() => {
@@ -588,8 +624,9 @@ export default function Home() {
     if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
     if (audioElRef.current) { audioElRef.current.pause(); audioElRef.current.remove(); audioElRef.current = null; }
     dialogueRef.current = []; stepHistoryRef.current = []; usedQueriesRef.current = [];
-    avatarSpeakingRef.current = false; lastEchoRef.current = "";
+    avatarSpeakingRef.current = false; lastAvatarTextRef.current = "";
     if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+    if (muteDebounceRef.current) { clearTimeout(muteDebounceRef.current); muteDebounceRef.current = null; }
     setMessages([]); setToasts([]); setIsSharing(false); setIsCameraOn(false); setChatOpen(false); setPhase("idle");
   }, []);
 
@@ -600,21 +637,39 @@ export default function Home() {
     const handler = (event: any) => {
       try {
         const msg = event?.data || event;
+
+        // Detect when avatar finishes speaking (non-user utterance)
+        if (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") {
+          if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+          avatarSpeakingTimerRef.current = setTimeout(() => {
+            avatarSpeakingRef.current = false;
+            lastAvatarTextRef.current = "";
+            console.log("[tavus] Avatar utterance complete");
+          }, 1500); // 1.5s cooldown for echo tail
+          return;
+        }
+
         if (msg?.event_type === "conversation.utterance" && msg?.properties?.role === "user") {
           const text = msg.properties.speech || "";
           if (!text) return;
 
-          // Skip if avatar is currently speaking (mic picking up its own audio)
-          if (avatarSpeakingRef.current) {
-            console.log("[voice] Ignoring utterance while avatar speaking:", text.slice(0, 50));
+          // Reject utterances while muted
+          if (isMutedRef.current) {
+            console.log("[voice] Rejected (muted):", text.slice(0, 50));
             return;
           }
 
-          // Skip if the utterance closely matches what the avatar just said
-          const normalized = text.toLowerCase().trim();
-          if (lastEchoRef.current && lastEchoRef.current.includes(normalized.slice(0, 20))) {
-            console.log("[voice] Ignoring echo of avatar speech:", text.slice(0, 50));
-            return;
+          // During avatar speech: filter echo but allow genuine interruptions
+          if (avatarSpeakingRef.current) {
+            if (isLikelyEcho(text, lastAvatarTextRef.current)) {
+              console.log("[voice] Rejected (echo):", text.slice(0, 50));
+              return;
+            }
+            // Genuine interruption — clear avatar speaking state
+            console.log("[voice] Interruption detected:", text.slice(0, 50));
+            avatarSpeakingRef.current = false;
+            lastAvatarTextRef.current = "";
+            if (avatarSpeakingTimerRef.current) { clearTimeout(avatarSpeakingTimerRef.current); avatarSpeakingTimerRef.current = null; }
           }
 
           // Immediately send an echo to interrupt Tavus's own LLM before it can parrot the user
@@ -634,7 +689,7 @@ export default function Home() {
     };
     call.on("app-message", handler);
     return () => { call.off("app-message", handler); };
-  }, [phase, handleUserMessage]);
+  }, [phase, handleUserMessage, isLikelyEcho]);
 
   return (
     <div className="h-dvh w-full bg-[#080808] relative overflow-hidden">
