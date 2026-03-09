@@ -112,10 +112,14 @@ export default function Home() {
 
   // --- Camera capture ---
   const captureCameraFrame = useCallback((): string | null => {
-    if (!cameraOnRef.current) return null;
+    if (!cameraOnRef.current) { console.log("[camera-capture] cameraOnRef is false"); return null; }
     const video = cameraVideoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || !video.videoWidth) return null;
+    if (!video || !canvas) { console.log("[camera-capture] no video or canvas element"); return null; }
+    if (!video.videoWidth) {
+      console.log("[camera-capture] videoWidth is 0, readyState:", video.readyState, "srcObject:", !!video.srcObject);
+      return null;
+    }
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
@@ -388,7 +392,20 @@ export default function Home() {
     };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     cameraStreamRef.current = stream;
-    if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = stream;
+      await cameraVideoRef.current.play().catch(() => {});
+      // Wait for video dimensions to be available (needed for frame capture)
+      if (!cameraVideoRef.current.videoWidth) {
+        await new Promise<void>((resolve) => {
+          const el = cameraVideoRef.current!;
+          const onMeta = () => { el.removeEventListener("loadedmetadata", onMeta); resolve(); };
+          el.addEventListener("loadedmetadata", onMeta);
+          // Timeout fallback
+          setTimeout(resolve, 3000);
+        });
+      }
+    }
 
     // Enumerate devices after permission is granted (labels are only available after getUserMedia)
     const devices = await navigator.mediaDevices.enumerateDevices();
