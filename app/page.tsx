@@ -42,6 +42,9 @@ export default function Home() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const sharingRef = useRef(false);
   const cameraOnRef = useRef(false);
+  const avatarSpeakingRef = useRef(false);
+  const avatarSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEchoRef = useRef("");
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
   useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
@@ -85,6 +88,19 @@ export default function Home() {
     const call = callRef.current;
     const convId = conversationIdRef.current;
     if (!call || !convId) return;
+
+    // Mark avatar as speaking so we ignore mic pickup of its own voice
+    avatarSpeakingRef.current = true;
+    lastEchoRef.current = text.toLowerCase().trim();
+    if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+    // Estimate speaking duration: ~120ms per word, minimum 3s, max 15s
+    const wordCount = text.split(/\s+/).length;
+    const speakingDuration = Math.min(15000, Math.max(3000, wordCount * 120));
+    avatarSpeakingTimerRef.current = setTimeout(() => {
+      avatarSpeakingRef.current = false;
+      lastEchoRef.current = "";
+    }, speakingDuration);
+
     call.sendAppMessage({
       message_type: "conversation",
       event_type: "conversation.echo",
@@ -564,6 +580,8 @@ export default function Home() {
     if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
     if (audioElRef.current) { audioElRef.current.pause(); audioElRef.current.remove(); audioElRef.current = null; }
     dialogueRef.current = []; stepHistoryRef.current = []; usedQueriesRef.current = [];
+    avatarSpeakingRef.current = false; lastEchoRef.current = "";
+    if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
     setMessages([]); setToasts([]); setIsSharing(false); setIsCameraOn(false); setChatOpen(false); setPhase("idle");
   }, []);
 
@@ -576,7 +594,22 @@ export default function Home() {
         const msg = event?.data || event;
         if (msg?.event_type === "conversation.utterance" && msg?.properties?.role === "user") {
           const text = msg.properties.speech || "";
-          if (text) handleUserMessage(text);
+          if (!text) return;
+
+          // Skip if avatar is currently speaking (mic picking up its own audio)
+          if (avatarSpeakingRef.current) {
+            console.log("[voice] Ignoring utterance while avatar speaking:", text.slice(0, 50));
+            return;
+          }
+
+          // Skip if the utterance closely matches what the avatar just said
+          const normalized = text.toLowerCase().trim();
+          if (lastEchoRef.current && lastEchoRef.current.includes(normalized.slice(0, 20))) {
+            console.log("[voice] Ignoring echo of avatar speech:", text.slice(0, 50));
+            return;
+          }
+
+          handleUserMessage(text);
         }
       } catch {}
     };
