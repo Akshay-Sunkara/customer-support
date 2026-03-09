@@ -84,34 +84,13 @@ export default function Home() {
     }, 12000);
   }, []);
 
-  // --- Tavus echo ---
+  // --- Tavus echo (persona is in echo mode — avatar only speaks what we send) ---
   const tellTavus = useCallback((text: string) => {
     const call = callRef.current;
     const convId = conversationIdRef.current;
     if (!call || !convId) return;
 
-    // Mark avatar as speaking
-    avatarSpeakingRef.current = true;
     lastAvatarTextRef.current = text;
-    if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
-
-    // Mute mic while avatar speaks to prevent echo pickup (especially on mobile)
-    if (!isMutedRef.current) {
-      call.setLocalAudio(false);
-    }
-
-    // Estimate speaking duration: ~150ms per word + 1.5s buffer
-    const wordCount = text.split(/\s+/).length;
-    const speakingDuration = Math.min(15000, Math.max(3000, wordCount * 150 + 1500));
-    avatarSpeakingTimerRef.current = setTimeout(() => {
-      avatarSpeakingRef.current = false;
-      lastAvatarTextRef.current = "";
-      // Restore mic unless user explicitly muted
-      if (!isMutedRef.current && callRef.current) {
-        callRef.current.setLocalAudio(true);
-      }
-      console.log("[tavus] Avatar done speaking, mic restored");
-    }, speakingDuration);
 
     call.sendAppMessage({
       message_type: "conversation",
@@ -635,40 +614,43 @@ export default function Home() {
       try {
         const msg = event?.data || event;
 
-        // Detect when avatar finishes speaking (non-user utterance)
-        if (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") {
+        // Avatar started speaking — mute mic to prevent echo pickup
+        if (msg?.event_type === "conversation.replica.started_speaking") {
+          avatarSpeakingRef.current = true;
+          if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+          if (!isMutedRef.current && callRef.current) {
+            callRef.current.setLocalAudio(false);
+          }
+          console.log("[tavus] Replica started speaking, mic muted");
+          return;
+        }
+
+        // Avatar finished speaking (utterance event or stopped speaking) — restore mic after cooldown
+        if (
+          (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") ||
+          msg?.event_type === "conversation.replica.stopped_speaking"
+        ) {
           if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
           avatarSpeakingTimerRef.current = setTimeout(() => {
             avatarSpeakingRef.current = false;
             lastAvatarTextRef.current = "";
-            // Restore mic unless user explicitly muted
             if (!isMutedRef.current && callRef.current) {
               callRef.current.setLocalAudio(true);
             }
-            console.log("[tavus] Avatar utterance complete, mic restored");
-          }, 1500); // 1.5s cooldown for echo tail
+            console.log("[tavus] Replica done speaking, mic restored");
+          }, 1000); // 1s cooldown for echo tail
           return;
         }
 
+        // User speech transcription
         if (msg?.event_type === "conversation.utterance" && msg?.properties?.role === "user") {
           const text = msg.properties.speech || "";
           if (!text) return;
 
-          // Reject utterances while muted or avatar is speaking (mic should be off, but reject any leakage)
+          // Reject while muted or avatar is speaking (mic should be off, but reject any leakage)
           if (isMutedRef.current || avatarSpeakingRef.current) {
             console.log("[voice] Rejected (" + (isMutedRef.current ? "muted" : "avatar speaking") + "):", text.slice(0, 50));
             return;
-          }
-
-          // Immediately send an echo to interrupt Tavus's own LLM before it can parrot the user
-          const convId = conversationIdRef.current;
-          if (call && convId) {
-            call.sendAppMessage({
-              message_type: "conversation",
-              event_type: "conversation.echo",
-              conversation_id: convId,
-              properties: { text: " " },
-            }, "*");
           }
 
           handleUserMessage(text);
