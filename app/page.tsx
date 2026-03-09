@@ -18,6 +18,7 @@ export default function Home() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceIdx, setSelectedDeviceIdx] = useState(0);
+  const [showCameraPicker, setShowCameraPicker] = useState(false);
 
   const avatarVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -408,7 +409,7 @@ export default function Home() {
     }
   }, [cameraFacing]);
 
-  // --- Camera toggle ---
+  // --- Camera toggle: if off, show picker first; if on, turn off ---
   const toggleCamera = useCallback(async () => {
     if (isCameraOn) {
       if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; }
@@ -416,17 +417,44 @@ export default function Home() {
       setIsCameraOn(false);
       return;
     }
+    // Enumerate devices to show picker (need temporary permission for labels)
     try {
-      await startCameraStream();
-      setIsCameraOn(true);
-    } catch {}
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      tempStream.getTracks().forEach((t) => t.stop());
+      const vids = devices.filter((d) => d.kind === "videoinput");
+      setVideoDevices(vids);
+      if (vids.length <= 1) {
+        // Only one camera — skip picker, just start
+        await startCameraStream();
+        setIsCameraOn(true);
+      } else {
+        setShowCameraPicker(true);
+      }
+    } catch {
+      // Permission denied or error — try starting directly
+      try { await startCameraStream(); setIsCameraOn(true); } catch {}
+    }
   }, [isCameraOn, startCameraStream]);
 
-  // --- Cycle to next camera device ---
-  const cycleCamera = useCallback(async () => {
+  // --- Pick a specific camera device from the picker ---
+  const pickCamera = useCallback(async (deviceId: string) => {
+    setShowCameraPicker(false);
+    try {
+      await startCameraStream(deviceId);
+      setIsCameraOn(true);
+    } catch {}
+  }, [startCameraStream]);
+
+  // --- Flip camera (front/back on mobile, cycle on desktop) ---
+  const flipCamera = useCallback(async () => {
     if (!isCameraOn) return;
-    if (videoDevices.length <= 1) {
-      // Fallback: flip facingMode (mobile with no device enumeration)
+    if (videoDevices.length > 1) {
+      const nextIdx = (selectedDeviceIdx + 1) % videoDevices.length;
+      try {
+        await startCameraStream(videoDevices[nextIdx].deviceId);
+      } catch {}
+    } else {
       const newFacing = cameraFacing === "environment" ? "user" : "environment";
       setCameraFacing(newFacing);
       try {
@@ -438,13 +466,7 @@ export default function Home() {
         cameraStreamRef.current = stream;
         if (cameraVideoRef.current) { cameraVideoRef.current.srcObject = stream; cameraVideoRef.current.play().catch(() => {}); }
       } catch {}
-      return;
     }
-    const nextIdx = (selectedDeviceIdx + 1) % videoDevices.length;
-    try {
-      await startCameraStream(videoDevices[nextIdx].deviceId);
-      setIsCameraOn(true);
-    } catch {}
   }, [isCameraOn, videoDevices, selectedDeviceIdx, cameraFacing, startCameraStream]);
 
   // --- Start session ---
@@ -736,7 +758,7 @@ export default function Home() {
                 </div>
               )}
               <button
-                onClick={(e) => { e.stopPropagation(); cycleCamera(); }}
+                onClick={(e) => { e.stopPropagation(); flipCamera(); }}
                 className="absolute top-1.5 right-1.5 w-7 h-7 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/70 transition-colors cursor-pointer"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6" /><path d="M23 20v-6h-6" /><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" /></svg>
@@ -746,6 +768,39 @@ export default function Home() {
 
           {/* Vignette */}
           <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/50 via-transparent to-black/20" />
+
+          {/* Camera picker modal */}
+          {showCameraPicker && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+              <div className="w-[90vw] max-w-xs rounded-2xl overflow-hidden" style={{ background: "rgba(20,20,20,0.95)", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }}>
+                <div className="px-4 py-3 border-b border-white/[0.06]">
+                  <p className="text-sm font-medium text-white/70">Select Camera</p>
+                </div>
+                <div className="py-1.5">
+                  {videoDevices.map((device, i) => (
+                    <button
+                      key={device.deviceId}
+                      onClick={() => pickCamera(device.deviceId)}
+                      className="w-full text-left px-4 py-3 hover:bg-white/[0.06] active:bg-white/[0.1] transition-colors cursor-pointer flex items-center gap-3"
+                    >
+                      <div className="w-8 h-8 rounded-full bg-white/[0.06] flex items-center justify-center flex-shrink-0">
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="white" strokeOpacity="0.5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
+                      </div>
+                      <span className="text-[13px] text-white/60 truncate">{device.label || `Camera ${i + 1}`}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="px-4 py-3 border-t border-white/[0.06]">
+                  <button
+                    onClick={() => setShowCameraPicker(false)}
+                    className="w-full py-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs text-white/40 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Annotation cards — full-width above controls on mobile, right-side on desktop */}
           <div className="absolute bottom-20 left-2 right-2 sm:bottom-6 sm:left-auto sm:right-5 z-20 flex flex-col items-stretch sm:items-end gap-2.5 pointer-events-none sm:max-w-[320px]">
