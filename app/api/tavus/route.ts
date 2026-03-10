@@ -36,9 +36,7 @@ export async function POST(req: Request) {
       properties: {
         max_call_duration: 600,
         enable_transcription: true,
-        pipeline_mode: "echo",
       },
-      pipeline_mode: "echo",
     };
     console.log("[tavus-api] Creating conversation:", JSON.stringify(conversationBody, null, 2));
 
