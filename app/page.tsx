@@ -113,20 +113,24 @@ export default function Home() {
 
   // --- Camera capture ---
   const captureCameraFrame = useCallback((): string | null => {
-    if (!cameraOnRef.current) { console.log("[camera-capture] cameraOnRef is false"); return null; }
+    console.log("[camera-capture] called — cameraOnRef:", cameraOnRef.current, "isCameraOn state:", "(check React DevTools)", "streamRef:", !!cameraStreamRef.current, "videoRef:", !!cameraVideoRef.current);
+    if (!cameraOnRef.current) { console.log("[camera-capture] BAIL: cameraOnRef is false"); return null; }
     const video = cameraVideoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) { console.log("[camera-capture] no video or canvas element"); return null; }
+    if (!video || !canvas) { console.log("[camera-capture] BAIL: no video or canvas element — video:", !!video, "canvas:", !!canvas); return null; }
     if (!video.videoWidth) {
-      console.log("[camera-capture] videoWidth is 0, readyState:", video.readyState, "srcObject:", !!video.srcObject);
+      console.log("[camera-capture] BAIL: videoWidth is 0, readyState:", video.readyState, "srcObject:", !!video.srcObject, "stream tracks:", cameraStreamRef.current?.getTracks().map(t => `${t.kind}:${t.readyState}`).join(","));
       return null;
     }
+    console.log("[camera-capture] Capturing frame:", video.videoWidth, "x", video.videoHeight);
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.85).replace(/^data:image\/\w+;base64,/, "");
+    const result = canvas.toDataURL("image/jpeg", 0.85).replace(/^data:image\/\w+;base64,/, "");
+    console.log("[camera-capture] SUCCESS — frame size:", result.length, "chars");
+    return result;
   }, []);
 
   // --- Draw annotation on screenshot (minimalist) ---
@@ -308,8 +312,9 @@ export default function Home() {
   }, [drawAnnotation, showAnnotation]);
 
   // --- Handle user message ---
-  const handleUserMessage = useCallback(async (text: string) => {
-    if (processingRef.current) return;
+  const handleUserMessage = useCallback(async (text: string, source: "voice" | "chat" = "voice") => {
+    console.log(`[handleUserMessage] called — source: ${source}, text: "${text.slice(0, 50)}", processingRef: ${processingRef.current}`);
+    if (processingRef.current) { console.log("[handleUserMessage] BAIL: already processing"); return; }
     dialogueRef.current.push({ role: "user", text });
     setMessages((prev) => [...prev, { role: "user", text }]);
 
@@ -759,9 +764,10 @@ export default function Home() {
             return;
           }
 
-          handleUserMessageRef.current(text);
+          console.log("[voice] Dispatching to handleUserMessage — cameraOnRef:", cameraOnRef.current, "cameraStreamRef:", !!cameraStreamRef.current, "cameraVideoRef:", !!cameraVideoRef.current, "videoWidth:", cameraVideoRef.current?.videoWidth);
+          handleUserMessageRef.current(text, "voice");
         }
-      } catch {}
+      } catch (e) { console.error("[voice] handler error:", e); }
     };
     call.on("app-message", handler);
     return () => { call.off("app-message", handler); };
@@ -961,7 +967,7 @@ export default function Home() {
               ))}
               <div ref={chatEndRef} />
             </div>
-            <form className="px-3 pb-4 sm:pb-8 pt-1" onSubmit={(e) => { e.preventDefault(); const text = chatInput.trim(); if (!text) return; setChatInput(""); handleUserMessage(text); }}>
+            <form className="px-3 pb-4 sm:pb-8 pt-1" onSubmit={(e) => { e.preventDefault(); const text = chatInput.trim(); if (!text) return; setChatInput(""); handleUserMessage(text, "chat"); }}>
               <div className="flex items-center gap-2 bg-white/[0.05] rounded-xl px-3 py-2 border border-white/[0.05] focus-within:border-white/15 transition-colors">
                 <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..." className="flex-1 bg-transparent text-[16px] sm:text-sm text-white placeholder-white/20 outline-none" />
                 <button type="submit" className="w-7 h-7 flex items-center justify-center rounded-full bg-white/8 hover:bg-white/15 transition-colors cursor-pointer flex-shrink-0">
