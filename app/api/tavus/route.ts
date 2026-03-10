@@ -8,21 +8,59 @@ export async function POST(req: Request) {
 
   console.log("[tavus-api] Config check — API key:", apiKey ? `present (${apiKey.slice(0, 6)}...)` : "MISSING", "| personaId:", personaId || "MISSING", "| replicaId:", replicaId || "MISSING");
 
-  if (!apiKey) {
-    console.error("[tavus-api] Missing TAVUS_API_KEY — returning 500");
-    return NextResponse.json({ error: "Missing TAVUS_API_KEY" }, { status: 500 });
+  if (!apiKey || !replicaId) {
+    console.error("[tavus-api] Missing TAVUS_API_KEY or TAVUS_REPLICA_ID — returning 500");
+    return NextResponse.json({ error: "Missing TAVUS_API_KEY or TAVUS_REPLICA_ID" }, { status: 500 });
   }
 
-  if (!replicaId) {
-    console.error("[tavus-api] Missing TAVUS_REPLICA_ID — returning 500");
-    return NextResponse.json({ error: "Missing TAVUS_REPLICA_ID" }, { status: 500 });
-  }
-
+  // Step 1: Create (or update) an echo-only persona — no LLM, no STT, completely silent
+  let echoPersonaId = personaId;
   try {
-    // Create conversation with replica only — NO persona to avoid Tavus's built-in LLM
-    // We use echo commands to make the avatar speak our Claude responses
+    // PATCH existing persona to echo mode
+    if (personaId) {
+      console.log("[tavus-api] PATCHing persona to echo mode:", personaId);
+      const patchRes = await fetch(`https://tavusapi.com/v2/personas/${personaId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({ pipeline_mode: "echo" }),
+      });
+      const patchData = await patchRes.text();
+      console.log("[tavus-api] Persona PATCH status:", patchRes.status, "response:", patchData.slice(0, 500));
+      if (!patchRes.ok) {
+        console.warn("[tavus-api] PATCH failed, will create a new echo persona");
+        echoPersonaId = null;
+      }
+    }
+
+    // If no persona or PATCH failed, create a fresh echo persona
+    if (!echoPersonaId) {
+      console.log("[tavus-api] Creating new echo persona...");
+      const createRes = await fetch("https://tavusapi.com/v2/personas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({
+          persona_name: "Ceres Echo",
+          pipeline_mode: "echo",
+        }),
+      });
+      const createData = await createRes.json();
+      console.log("[tavus-api] Create persona status:", createRes.status, "response:", JSON.stringify(createData).slice(0, 500));
+      if (createRes.ok && createData.persona_id) {
+        echoPersonaId = createData.persona_id;
+      } else {
+        console.error("[tavus-api] Failed to create echo persona:", createData);
+        return NextResponse.json({ error: "Failed to create echo persona", details: createData }, { status: 500 });
+      }
+    }
+  } catch (e) {
+    console.error("[tavus-api] Persona setup failed:", e);
+  }
+
+  // Step 2: Create conversation with the echo persona — no custom_greeting
+  try {
     const conversationBody = {
-      ...(replicaId ? { replica_id: replicaId } : {}),
+      persona_id: echoPersonaId,
+      replica_id: replicaId,
       properties: {
         max_call_duration: 600,
         enable_transcription: true,
@@ -41,7 +79,7 @@ export async function POST(req: Request) {
     console.log("[tavus-api] Conversation response:", JSON.stringify(data, null, 2));
 
     if (!response.ok) {
-      console.error("[tavus-api] Tavus API returned non-OK status:", response.status, "— returning error to client");
+      console.error("[tavus-api] Tavus API returned non-OK status:", response.status);
       return NextResponse.json({ error: data.message || data.error || `Tavus API error ${response.status}`, details: data }, { status: response.status });
     }
 

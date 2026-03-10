@@ -93,7 +93,7 @@ export default function Home() {
       message_type: "conversation",
       event_type: "conversation.echo",
       conversation_id: convId,
-      properties: { text },
+      properties: { modality: "text", text },
     }, "*");
     dialogueRef.current.push({ role: "ceres", text });
     setMessages((prev) => [...prev, { role: "ceres", text }]);
@@ -747,23 +747,15 @@ export default function Home() {
           console.log("[tavus-event]", eventType, msg?.properties?.role || "", (msg?.properties?.speech || msg?.properties?.text || "").slice(0, 80));
         }
 
-        // Avatar started speaking
+        // Avatar started speaking — mute mic to prevent echo pickup
         if (msg?.event_type === "conversation.replica.started_speaking") {
           avatarSpeakingRef.current = true;
-          if (echoSentRef.current) {
-            // OUR echo — play audio, mute mic to prevent echo pickup
-            if (audioElRef.current) audioElRef.current.volume = 1.0;
-            if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(false);
-            console.log("[tavus] OUR echo started speaking, audio ON, mic muted");
-          } else {
-            // Tavus's built-in LLM — silence it
-            if (audioElRef.current) audioElRef.current.volume = 0;
-            console.log("[tavus] Tavus LLM speaking (not our echo) — audio MUTED");
-          }
+          if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(false);
+          console.log("[tavus] Replica started speaking, mic muted");
           return;
         }
 
-        // Avatar finished speaking — restore mic and audio
+        // Avatar finished speaking — restore mic
         if (
           (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") ||
           msg?.event_type === "conversation.replica.stopped_speaking"
@@ -773,9 +765,8 @@ export default function Home() {
             avatarSpeakingRef.current = false;
             echoSentRef.current = false;
             lastAvatarTextRef.current = "";
-            if (audioElRef.current) audioElRef.current.volume = 1.0;
             if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(true);
-            console.log("[tavus] Replica done, mic restored, echoSent reset");
+            console.log("[tavus] Replica done, mic restored");
           }, 500);
           return;
         }
