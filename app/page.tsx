@@ -49,6 +49,7 @@ export default function Home() {
   const avatarSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAvatarTextRef = useRef("");
   const muteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleUserMessageRef = useRef<(text: string) => void>(() => {});
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
   useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
@@ -364,6 +365,8 @@ export default function Home() {
 
     processingRef.current = false;
   }, [processMessage, tellTavus, captureFrame, captureCameraFrame, handleHighlight]);
+
+  useEffect(() => { handleUserMessageRef.current = handleUserMessage; }, [handleUserMessage]);
 
   // --- Screen share toggle ---
   const toggleScreenShare = useCallback(async () => {
@@ -756,13 +759,13 @@ export default function Home() {
             return;
           }
 
-          handleUserMessage(text);
+          handleUserMessageRef.current(text);
         }
       } catch {}
     };
     call.on("app-message", handler);
     return () => { call.off("app-message", handler); };
-  }, [phase, handleUserMessage]);
+  }, [phase]);
 
   return (
     <div className="h-dvh w-full bg-[#080808] relative overflow-hidden">
@@ -823,8 +826,10 @@ export default function Home() {
             <div className="relative rounded-2xl overflow-hidden border border-white/[0.1]" style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
               <video ref={cameraVideoRef} autoPlay playsInline muted className="w-48 h-36 sm:w-64 sm:h-48 object-cover bg-black" />
               {videoDevices.length > 1 && videoDevices[selectedDeviceIdx] && (
-                <div className="absolute bottom-1.5 left-1.5 right-8 px-2 py-0.5 rounded-full bg-black/60 overflow-hidden">
-                  <p className="text-[10px] text-white/50 truncate">{videoDevices[selectedDeviceIdx].label || `Camera ${selectedDeviceIdx + 1}`}</p>
+                <div className="absolute bottom-1.5 left-0 right-0 flex justify-center pointer-events-none">
+                  <div className="px-2 py-0.5 rounded-full bg-black/60 overflow-hidden max-w-[calc(100%-2.5rem)]">
+                    <p className="text-[10px] text-white/50 truncate text-center">{videoDevices[selectedDeviceIdx].label || `Camera ${selectedDeviceIdx + 1}`}</p>
+                  </div>
                 </div>
               )}
               <button
