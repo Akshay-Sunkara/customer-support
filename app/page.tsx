@@ -50,6 +50,7 @@ export default function Home() {
   const lastAvatarTextRef = useRef("");
   const muteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleUserMessageRef = useRef<(text: string, source?: "voice" | "chat") => void>(() => {});
+  const echoSentRef = useRef(false); // true when WE sent an echo, false for Tavus's own LLM
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
   useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
@@ -86,6 +87,7 @@ export default function Home() {
     if (!call || !convId) return;
 
     lastAvatarTextRef.current = text;
+    echoSentRef.current = true;
 
     call.sendAppMessage({
       message_type: "conversation",
@@ -138,13 +140,17 @@ export default function Home() {
       console.log("[camera-capture] BAIL: videoWidth is 0, readyState:", video.readyState, "srcObject:", !!video.srcObject, "stream tracks:", cameraStreamRef.current?.getTracks().map(t => `${t.kind}:${t.readyState}`).join(","));
       return null;
     }
-    console.log("[camera-capture] Capturing frame:", video.videoWidth, "x", video.videoHeight);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Downscale to 640px wide max for faster processing
+    const scale = Math.min(1, 640 / video.videoWidth);
+    const w = Math.round(video.videoWidth * scale);
+    const h = Math.round(video.videoHeight * scale);
+    console.log("[camera-capture] Capturing frame:", video.videoWidth, "x", video.videoHeight, "→", w, "x", h);
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
-    const result = canvas.toDataURL("image/jpeg", 0.85).replace(/^data:image\/\w+;base64,/, "");
+    ctx.drawImage(video, 0, 0, w, h);
+    const result = canvas.toDataURL("image/jpeg", 0.6).replace(/^data:image\/\w+;base64,/, "");
     console.log("[camera-capture] SUCCESS — frame size:", result.length, "chars");
     return result;
   }, []);
@@ -741,32 +747,36 @@ export default function Home() {
           console.log("[tavus-event]", eventType, msg?.properties?.role || "", (msg?.properties?.speech || msg?.properties?.text || "").slice(0, 80));
         }
 
-        // Avatar started speaking — mute mic to prevent echo pickup
+        // Avatar started speaking
         if (msg?.event_type === "conversation.replica.started_speaking") {
           avatarSpeakingRef.current = true;
-          // Don't clear the safety timer from tellTavus — it's our fallback
-          if (!isMutedRef.current && callRef.current) {
-            callRef.current.setLocalAudio(false);
+          if (echoSentRef.current) {
+            // OUR echo — play audio, mute mic to prevent echo pickup
+            if (audioElRef.current) audioElRef.current.volume = 1.0;
+            if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(false);
+            console.log("[tavus] OUR echo started speaking, audio ON, mic muted");
+          } else {
+            // Tavus's built-in LLM — silence it
+            if (audioElRef.current) audioElRef.current.volume = 0;
+            console.log("[tavus] Tavus LLM speaking (not our echo) — audio MUTED");
           }
-          console.log("[tavus] Replica started speaking, mic muted. avatarSpeakingRef: true");
           return;
         }
 
-        // Avatar finished speaking (utterance event or stopped speaking) — restore mic after cooldown
+        // Avatar finished speaking — restore mic and audio
         if (
           (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") ||
           msg?.event_type === "conversation.replica.stopped_speaking"
         ) {
-          console.log("[tavus] Replica stop event received:", msg?.event_type);
           if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
           avatarSpeakingTimerRef.current = setTimeout(() => {
             avatarSpeakingRef.current = false;
+            echoSentRef.current = false;
             lastAvatarTextRef.current = "";
-            if (!isMutedRef.current && callRef.current) {
-              callRef.current.setLocalAudio(true);
-            }
-            console.log("[tavus] Replica done speaking, mic restored. avatarSpeakingRef: false");
-          }, 1000); // 1s cooldown for echo tail
+            if (audioElRef.current) audioElRef.current.volume = 1.0;
+            if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(true);
+            console.log("[tavus] Replica done, mic restored, echoSent reset");
+          }, 500);
           return;
         }
 
