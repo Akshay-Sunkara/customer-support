@@ -491,13 +491,14 @@ export default function Home() {
 
   // --- Start session ---
   const startSession = useCallback(async () => {
+    console.log("[session] startSession called, setting phase to 'connecting'");
     setPhase("connecting");
 
     // Connection timeout — fall back to idle if avatar never connects
     const connectionTimeout = setTimeout(() => {
       setPhase((cur) => {
         if (cur === "connecting") {
-          console.warn("[session] Connection timed out");
+          console.warn("[session] Connection timed out after 30s — still in 'connecting' phase");
           // Clean up partial state
           if (callRef.current) { try { callRef.current.leave(); callRef.current.destroy(); } catch {} callRef.current = null; }
           if (conversationIdRef.current) {
@@ -514,37 +515,47 @@ export default function Home() {
       // Get mic — single request, triggered by user tap so permissions work on mobile
       let audioSource: MediaStreamTrack | boolean = true;
       try {
+        console.log("[session] Requesting mic permissions...");
         const micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
         audioSource = micStream.getAudioTracks()[0] || true;
+        console.log("[session] Mic acquired:", typeof audioSource === "boolean" ? "default" : audioSource.label);
       } catch (e) {
         console.warn("[mic] Failed to get audio, falling back to default:", e);
       }
 
+      console.log("[session] Fetching /api/tavus to create conversation...");
       const res = await fetch("/api/tavus", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userName: "" }),
       });
+      console.log("[session] /api/tavus response status:", res.status);
       const data = await res.json();
-      if (data.error) { if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
+      console.log("[session] /api/tavus response data:", JSON.stringify(data, null, 2));
+      if (data.error) { console.error("[session] Tavus API returned error:", data.error); if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
 
       conversationIdRef.current = data.conversation_id;
       const url = data.conversation_url;
-      if (!url) { if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
+      console.log("[session] conversation_id:", data.conversation_id, "conversation_url:", url);
+      if (!url) { console.error("[session] No conversation_url in response — aborting"); if (typeof audioSource !== "boolean") audioSource.stop(); clearTimeout(connectionTimeout); setPhase("idle"); return; }
 
+      console.log("[session] Creating Daily call object...");
       const call = Daily.createCallObject({ videoSource: false, audioSource });
       callRef.current = call;
 
       call.on("track-started", (event: any) => {
+        console.log("[daily] track-started:", event.track?.kind, "local:", event.participant?.local, "participantId:", event.participant?.session_id);
         if (event.participant?.local) return;
         if (event.track.kind === "video") {
+          console.log("[daily] Remote video track received — transitioning to 'active'");
           clearTimeout(connectionTimeout);
           pendingVideoTrackRef.current = event.track;
           setPhase("active");
         }
         if (event.track.kind === "audio") {
+          console.log("[daily] Remote audio track received — setting up audio element");
           if (!audioElRef.current) {
             audioElRef.current = document.createElement("audio");
             audioElRef.current.autoplay = true;
@@ -554,6 +565,7 @@ export default function Home() {
           }
           audioElRef.current.srcObject = new MediaStream([event.track]);
           audioElRef.current.play().catch(() => {
+            console.warn("[daily] Audio autoplay blocked — waiting for user interaction");
             const resume = () => { audioElRef.current?.play().catch(() => {}); document.removeEventListener("click", resume); document.removeEventListener("touchstart", resume); };
             document.addEventListener("click", resume);
             document.addEventListener("touchstart", resume);
@@ -561,12 +573,31 @@ export default function Home() {
         }
       });
 
+      call.on("participant-joined", (event: any) => {
+        console.log("[daily] participant-joined:", event.participant?.session_id, "local:", event.participant?.local);
+      });
+
+      call.on("participant-left", (event: any) => {
+        console.log("[daily] participant-left:", event.participant?.session_id, "local:", event.participant?.local);
+      });
+
+      call.on("joined-meeting", (event: any) => {
+        console.log("[daily] joined-meeting event fired:", JSON.stringify(event));
+      });
+
+      call.on("left-meeting", (event: any) => {
+        console.log("[daily] left-meeting event fired");
+      });
+
       call.on("error", (event: any) => {
+        console.error("[daily] error event:", JSON.stringify(event));
         const msg = JSON.stringify(event);
         if (msg.includes("timed out") || msg.includes("lookup") || msg.includes("signaling")) {
+          console.log("[daily] Retriable error detected, will retry in 4s...");
           try { call.leave(); call.destroy(); } catch {}
           setTimeout(() => {
             if (conversationIdRef.current) {
+              console.log("[daily] Retrying Daily join...");
               const retry = Daily.createCallObject({ videoSource: false, audioSource: true });
               callRef.current = retry;
               retry.join({ url });
@@ -575,10 +606,23 @@ export default function Home() {
         }
       });
 
+      call.on("camera-error", (event: any) => {
+        console.error("[daily] camera-error:", JSON.stringify(event));
+      });
+
+      call.on("network-quality-change", (event: any) => {
+        console.log("[daily] network-quality-change:", JSON.stringify(event));
+      });
+
+      console.log("[session] Waiting 3s before joining Daily room...");
       await new Promise((r) => setTimeout(r, 3000));
+      console.log("[session] Joining Daily room:", url);
       await call.join({ url });
+      console.log("[session] Daily join() resolved successfully. Setting local audio to true.");
       call.setLocalAudio(true);
-    } catch {
+      console.log("[session] Waiting for remote video track to transition to 'active'...");
+    } catch (e) {
+      console.error("[session] startSession failed with error:", e);
       clearTimeout(connectionTimeout);
       setPhase("idle");
     }
