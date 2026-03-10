@@ -93,7 +93,8 @@ async function groundUI(screenshot: string, query: string) {
 
 async function groundCamera(imageB64: string, query: string, imgW: number, imgH: number) {
   const hfToken = process.env.HF_TOKEN;
-  if (!hfToken) return null;
+  console.log("[groundCamera] called — query:", query, "imgW:", imgW, "imgH:", imgH, "hfToken:", hfToken ? "present" : "MISSING", "imageLen:", imageB64?.length);
+  if (!hfToken) { console.error("[groundCamera] No HF_TOKEN"); return null; }
 
   // Grounding DINO expects simple label queries — extract the core noun
   const label = query.replace(/^(the|a|an)\s+/i, "").split(/[,.]/).map(s => s.trim()).filter(Boolean).join(". ") + ".";
@@ -236,14 +237,17 @@ function parseDinoResponse(data: any, imgW: number, imgH: number, query: string)
 export async function POST(req: Request) {
   const { screenshot, query, imgW, imgH, isCamera } = await req.json();
 
-  try {
-    const result = isCamera
-      ? await groundCamera(screenshot, query, imgW || 1280, imgH || 720)
-      : await groundUI(screenshot, query);
+  console.log("[grounding] POST — isCamera:", isCamera, "query:", query, "imgW:", imgW, "imgH:", imgH, "screenshotLen:", screenshot?.length);
 
+  try {
+    // Use RunPod vision model for both screen and camera grounding
+    const result = await groundUI(screenshot, query);
+
+    console.log("[grounding] result:", result ? JSON.stringify(result).slice(0, 300) : "null");
     if (result) return NextResponse.json(result);
     return NextResponse.json({});
-  } catch {
+  } catch (e) {
+    console.error("[grounding] error:", e);
     return NextResponse.json({});
   }
 }
