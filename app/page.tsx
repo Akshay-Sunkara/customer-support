@@ -266,6 +266,7 @@ export default function Home() {
 
   // --- Show annotation card ---
   const showAnnotation = useCallback((image: string, label: string, instruction: string) => {
+    console.log("[showAnnotation] called — label:", label, "instruction:", instruction.slice(0, 50), "imageLen:", image.length);
     setChatOpen(false);
     const id = ++annotationIdRef.current;
     setAnnotations((prev) => {
@@ -305,6 +306,7 @@ export default function Home() {
 
   // --- Highlight (screen or camera) ---
   const handleHighlight = useCallback(async (highlightQuery: string, frameB64: string, isCamera: boolean, actionLabel?: string, speechText?: string) => {
+    console.log("[handleHighlight] called — query:", highlightQuery, "isCamera:", isCamera, "frameLen:", frameB64.length);
     try {
       const vid = isCamera ? cameraVideoRef.current : screenVideoRef.current;
       // Use actual captured image dimensions (camera is downscaled to 640px max)
@@ -331,6 +333,7 @@ export default function Home() {
       clearTimeout(timeout);
       const data = await res.json();
 
+      console.log("[handleHighlight] grounding response:", JSON.stringify(data));
       if (data.cx != null) {
         const label = data.label || actionLabel || highlightQuery;
         const instruction = speechText || actionLabel || highlightQuery;
@@ -365,6 +368,7 @@ export default function Home() {
       const response = await processMessage(text, taskActiveRef.current, screenshot, cameraFrame);
       if (!response) { processingRef.current = false; return; }
 
+      console.log("[handleUserMessage] response:", JSON.stringify({ speech: response.speech?.slice(0, 80), highlightQuery: response.highlightQuery, highlightSource: response.highlightSource, actionLabel: response.actionLabel, action: response.action }));
       if (response.speech) tellTavus(response.speech);
 
       if (response.highlightQuery) {
