@@ -8,32 +8,20 @@ export async function POST(req: Request) {
 
   console.log("[tavus-api] Config check — API key:", apiKey ? `present (${apiKey.slice(0, 6)}...)` : "MISSING", "| personaId:", personaId || "MISSING", "| replicaId:", replicaId || "MISSING");
 
-  if (!apiKey || !personaId) {
-    console.error("[tavus-api] Missing TAVUS_API_KEY or TAVUS_PERSONA_ID — returning 500");
-    return NextResponse.json({ error: "Missing TAVUS_API_KEY or TAVUS_PERSONA_ID" }, { status: 500 });
+  if (!apiKey) {
+    console.error("[tavus-api] Missing TAVUS_API_KEY — returning 500");
+    return NextResponse.json({ error: "Missing TAVUS_API_KEY" }, { status: 500 });
   }
 
-  // Ensure persona is in echo mode AND silence its built-in LLM
-  try {
-    console.log("[tavus-api] PATCHing persona to echo mode:", `https://tavusapi.com/v2/personas/${personaId}`);
-    const patchRes = await fetch(`https://tavusapi.com/v2/personas/${personaId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-      body: JSON.stringify({
-        pipeline_mode: "echo",
-        system_prompt: "You are in echo-only mode. Do NOT generate any responses to user speech. Stay completely silent. Never speak unless text is sent via the echo API. If the user speaks, do nothing. Say absolutely nothing on your own.",
-        context: "",
-      }),
-    });
-    const patchData = await patchRes.text();
-    console.log("[tavus-api] Persona PATCH status:", patchRes.status, "response:", patchData.slice(0, 500));
-  } catch (e) {
-    console.error("[tavus-api] Failed to patch persona to echo mode:", e);
+  if (!replicaId) {
+    console.error("[tavus-api] Missing TAVUS_REPLICA_ID — returning 500");
+    return NextResponse.json({ error: "Missing TAVUS_REPLICA_ID" }, { status: 500 });
   }
 
   try {
+    // Create conversation with replica only — NO persona to avoid Tavus's built-in LLM
+    // We use echo commands to make the avatar speak our Claude responses
     const conversationBody = {
-      persona_id: personaId,
       ...(replicaId ? { replica_id: replicaId } : {}),
       properties: {
         max_call_duration: 600,
