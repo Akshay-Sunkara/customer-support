@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing TAVUS_API_KEY or TAVUS_PERSONA_ID" }, { status: 500 });
   }
 
-  // Ensure persona is in echo mode (disables built-in LLM so avatar only speaks via conversation.echo)
+  // Ensure persona is in echo mode AND silence its built-in LLM
   try {
     console.log("[tavus-api] PATCHing persona to echo mode:", `https://tavusapi.com/v2/personas/${personaId}`);
     const patchRes = await fetch(`https://tavusapi.com/v2/personas/${personaId}`, {
@@ -21,6 +21,8 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json", "x-api-key": apiKey },
       body: JSON.stringify({
         pipeline_mode: "echo",
+        system_prompt: "You are in echo-only mode. Do NOT generate any responses to user speech. Stay completely silent. Never speak unless text is sent via the echo API. If the user speaks, do nothing. Say absolutely nothing on your own.",
+        context: "",
       }),
     });
     const patchData = await patchRes.text();
