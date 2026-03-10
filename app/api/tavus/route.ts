@@ -11,13 +11,15 @@ export async function POST(req: Request) {
 
   // Ensure persona is in echo mode (disables built-in LLM so avatar only speaks via conversation.echo)
   try {
-    await fetch(`https://tavusapi.com/v2/personas/${personaId}`, {
+    const patchRes = await fetch(`https://tavusapi.com/v2/personas/${personaId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-      body: JSON.stringify([
-        { op: "replace", path: "/pipeline_mode", value: "echo" },
-      ]),
+      body: JSON.stringify({
+        pipeline_mode: "echo",
+      }),
     });
+    const patchData = await patchRes.text();
+    console.log("[tavus] Persona PATCH status:", patchRes.status, "response:", patchData.slice(0, 500));
   } catch (e) {
     console.warn("[tavus] Failed to patch persona to echo mode:", e);
   }
@@ -31,11 +33,14 @@ export async function POST(req: Request) {
       properties: {
         max_call_duration: 600,
         enable_transcription: true,
+        pipeline_mode: "echo",
       },
+      // Also set at conversation level
+      pipeline_mode: "echo",
     }),
   });
 
   const data = await response.json();
-  console.log("[tavus] Response:", JSON.stringify(data, null, 2));
+  console.log("[tavus] Conversation response:", JSON.stringify(data, null, 2));
   return NextResponse.json(data);
 }

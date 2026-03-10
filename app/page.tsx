@@ -667,6 +667,12 @@ export default function Home() {
       try {
         const msg = event?.data || event;
 
+        // Log ALL events for debugging
+        const eventType = msg?.event_type || msg?.message_type || "unknown";
+        if (eventType !== "unknown") {
+          console.log("[tavus-event]", eventType, msg?.properties?.role || "", (msg?.properties?.speech || msg?.properties?.text || "").slice(0, 80));
+        }
+
         // Avatar started speaking — mute mic to prevent echo pickup
         if (msg?.event_type === "conversation.replica.started_speaking") {
           avatarSpeakingRef.current = true;
