@@ -733,65 +733,97 @@ export default function Home() {
     setMessages([]); setAnnotations([]); setIsSharing(false); setIsCameraOn(false); setChatOpen(false); setPhase("idle");
   }, []);
 
-  // Voice input from Tavus
+  // Tavus app-message handler — avatar speaking events only (STT is off in echo mode)
   useEffect(() => {
     const call = callRef.current;
     if (!call || phase !== "active") return;
     const handler = (event: any) => {
       try {
         const msg = event?.data || event;
-
-        // Log ALL events for debugging
         const eventType = msg?.event_type || msg?.message_type || "unknown";
         if (eventType !== "unknown") {
           console.log("[tavus-event]", eventType, msg?.properties?.role || "", (msg?.properties?.speech || msg?.properties?.text || "").slice(0, 80));
         }
 
-        // Avatar started speaking — mute mic to prevent echo pickup
         if (msg?.event_type === "conversation.replica.started_speaking") {
           avatarSpeakingRef.current = true;
-          if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(false);
-          console.log("[tavus] Replica started speaking, mic muted");
+          console.log("[tavus] Replica started speaking");
           return;
         }
 
-        // Avatar finished speaking — restore mic
-        if (
-          (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") ||
-          msg?.event_type === "conversation.replica.stopped_speaking"
-        ) {
+        if (msg?.event_type === "conversation.replica.stopped_speaking") {
           if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
           avatarSpeakingTimerRef.current = setTimeout(() => {
             avatarSpeakingRef.current = false;
             echoSentRef.current = false;
             lastAvatarTextRef.current = "";
-            if (!isMutedRef.current && callRef.current) callRef.current.setLocalAudio(true);
-            console.log("[tavus] Replica done, mic restored");
+            console.log("[tavus] Replica done speaking");
           }, 500);
           return;
         }
-
-        // User speech transcription
-        if (msg?.event_type === "conversation.utterance" && msg?.properties?.role === "user") {
-          const text = msg.properties.speech || "";
-          if (!text) return;
-
-          // Reject while muted (avatar speaking no longer blocks — safety timers handle echo)
-          if (isMutedRef.current) {
-            console.log("[voice] Rejected (muted):", text.slice(0, 50));
-            return;
-          }
-          if (avatarSpeakingRef.current) {
-            console.log("[voice] Avatar speaking but allowing message through:", text.slice(0, 50));
-          }
-
-          console.log("[voice] Dispatching to handleUserMessage — cameraOnRef:", cameraOnRef.current, "cameraStreamRef:", !!cameraStreamRef.current, "cameraVideoRef:", !!cameraVideoRef.current, "videoWidth:", cameraVideoRef.current?.videoWidth);
-          handleUserMessageRef.current(text, "voice");
-        }
-      } catch (e) { console.error("[voice] handler error:", e); }
+      } catch (e) { console.error("[tavus-event] handler error:", e); }
     };
     call.on("app-message", handler);
     return () => { call.off("app-message", handler); };
+  }, [phase]);
+
+  // Client-side speech recognition (Web Speech API) — replaces Tavus STT which is off in echo mode
+  useEffect(() => {
+    if (phase !== "active") return;
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn("[speech] Web Speech API not supported in this browser");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    let stopped = false;
+
+    recognition.onresult = (event: any) => {
+      const last = event.results[event.results.length - 1];
+      if (!last.isFinal) return;
+      const text = last[0].transcript.trim();
+      if (!text) return;
+
+      console.log("[speech] Recognized:", text);
+
+      if (isMutedRef.current) {
+        console.log("[speech] Rejected (muted):", text.slice(0, 50));
+        return;
+      }
+
+      handleUserMessageRef.current(text, "voice");
+    };
+
+    recognition.onerror = (event: any) => {
+      console.warn("[speech] Error:", event.error);
+      // Restart on recoverable errors
+      if (!stopped && event.error !== "not-allowed" && event.error !== "service-not-allowed") {
+        try { recognition.start(); } catch {}
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if session is still active
+      if (!stopped) {
+        console.log("[speech] Recognition ended, restarting...");
+        try { recognition.start(); } catch {}
+      }
+    };
+
+    console.log("[speech] Starting Web Speech API recognition");
+    try { recognition.start(); } catch (e) { console.error("[speech] Failed to start:", e); }
+
+    return () => {
+      stopped = true;
+      try { recognition.stop(); } catch {}
+      console.log("[speech] Recognition stopped");
+    };
   }, [phase]);
 
   return (
