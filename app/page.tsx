@@ -307,8 +307,17 @@ export default function Home() {
   const handleHighlight = useCallback(async (highlightQuery: string, frameB64: string, isCamera: boolean, actionLabel?: string, speechText?: string) => {
     try {
       const vid = isCamera ? cameraVideoRef.current : screenVideoRef.current;
-      const imgW = vid?.videoWidth || (isCamera ? 1280 : 1920);
-      const imgH = vid?.videoHeight || (isCamera ? 720 : 1080);
+      // Use actual captured image dimensions (camera is downscaled to 640px max)
+      let imgW: number, imgH: number;
+      if (isCamera) {
+        const nativeW = vid?.videoWidth || 1280;
+        const scale = Math.min(1, 640 / nativeW);
+        imgW = Math.round(nativeW * scale);
+        imgH = Math.round((vid?.videoHeight || 720) * scale);
+      } else {
+        imgW = vid?.videoWidth || 1920;
+        imgH = vid?.videoHeight || 1080;
+      }
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 14000);
