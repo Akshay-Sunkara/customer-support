@@ -95,6 +95,22 @@ export default function Home() {
     }, "*");
     dialogueRef.current.push({ role: "ceres", text });
     setMessages((prev) => [...prev, { role: "ceres", text }]);
+
+    // Safety fallback: estimate speaking duration (~150 words/min) and force-reset avatarSpeakingRef
+    // In echo mode, stopped_speaking events may not fire reliably
+    const wordCount = text.split(/\s+/).length;
+    const estimatedMs = Math.max(3000, (wordCount / 150) * 60 * 1000 + 2000);
+    if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+    avatarSpeakingTimerRef.current = setTimeout(() => {
+      if (avatarSpeakingRef.current) {
+        console.log("[tavus] Safety timeout: force-resetting avatarSpeaking after", Math.round(estimatedMs / 1000), "s");
+        avatarSpeakingRef.current = false;
+        lastAvatarTextRef.current = "";
+        if (!isMutedRef.current && callRef.current) {
+          callRef.current.setLocalAudio(true);
+        }
+      }
+    }, estimatedMs);
   }, []);
 
   // --- Screen capture ---
@@ -728,11 +744,11 @@ export default function Home() {
         // Avatar started speaking — mute mic to prevent echo pickup
         if (msg?.event_type === "conversation.replica.started_speaking") {
           avatarSpeakingRef.current = true;
-          if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
+          // Don't clear the safety timer from tellTavus — it's our fallback
           if (!isMutedRef.current && callRef.current) {
             callRef.current.setLocalAudio(false);
           }
-          console.log("[tavus] Replica started speaking, mic muted");
+          console.log("[tavus] Replica started speaking, mic muted. avatarSpeakingRef: true");
           return;
         }
 
@@ -741,6 +757,7 @@ export default function Home() {
           (msg?.event_type === "conversation.utterance" && msg?.properties?.role !== "user") ||
           msg?.event_type === "conversation.replica.stopped_speaking"
         ) {
+          console.log("[tavus] Replica stop event received:", msg?.event_type);
           if (avatarSpeakingTimerRef.current) clearTimeout(avatarSpeakingTimerRef.current);
           avatarSpeakingTimerRef.current = setTimeout(() => {
             avatarSpeakingRef.current = false;
@@ -748,7 +765,7 @@ export default function Home() {
             if (!isMutedRef.current && callRef.current) {
               callRef.current.setLocalAudio(true);
             }
-            console.log("[tavus] Replica done speaking, mic restored");
+            console.log("[tavus] Replica done speaking, mic restored. avatarSpeakingRef: false");
           }, 1000); // 1s cooldown for echo tail
           return;
         }
@@ -758,10 +775,13 @@ export default function Home() {
           const text = msg.properties.speech || "";
           if (!text) return;
 
-          // Reject while muted or avatar is speaking (mic should be off, but reject any leakage)
-          if (isMutedRef.current || avatarSpeakingRef.current) {
-            console.log("[voice] Rejected (" + (isMutedRef.current ? "muted" : "avatar speaking") + "):", text.slice(0, 50));
+          // Reject while muted (avatar speaking no longer blocks — safety timers handle echo)
+          if (isMutedRef.current) {
+            console.log("[voice] Rejected (muted):", text.slice(0, 50));
             return;
+          }
+          if (avatarSpeakingRef.current) {
+            console.log("[voice] Avatar speaking but allowing message through:", text.slice(0, 50));
           }
 
           console.log("[voice] Dispatching to handleUserMessage — cameraOnRef:", cameraOnRef.current, "cameraStreamRef:", !!cameraStreamRef.current, "cameraVideoRef:", !!cameraVideoRef.current, "videoWidth:", cameraVideoRef.current?.videoWidth);
