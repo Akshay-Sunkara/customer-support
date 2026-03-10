@@ -49,7 +49,7 @@ export default function Home() {
   const avatarSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAvatarTextRef = useRef("");
   const muteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleUserMessageRef = useRef<(text: string) => void>(() => {});
+  const handleUserMessageRef = useRef<(text: string, source?: "voice" | "chat") => void>(() => {});
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
   useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
