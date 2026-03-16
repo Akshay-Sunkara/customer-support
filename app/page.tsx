@@ -1,0 +1,629 @@
+"use client";
+
+import { useRef, useState, useCallback, useEffect } from "react";
+
+type Annotation = { id: number; screenshot: string; cx: number; cy: number; label: string; isCamera?: boolean };
+type Msg = { role: "user" | "ceres"; text: string; annotation?: { screenshot: string; cx: number; cy: number; label: string; isCamera?: boolean } };
+
+const BAR_COUNT = 40;
+const BAR_W = 4;
+const BAR_GAP = 4;
+const MAX_BAR_H = 120;
+
+export default function Home() {
+  const [phase] = useState<"active">("active");
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [speaking, setSpeaking] = useState(false);
+  const [thinking, setThinking] = useState(false);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [showControls, setShowControls] = useState(true);
+  const [showWait, setShowWait] = useState(false);
+
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveCanvasRef = useRef<HTMLCanvasElement>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const smoothedRef = useRef<Float32Array>(new Float32Array(BAR_COUNT));
+  const animFrameRef = useRef<number>(0);
+  const dialogueRef = useRef<{ role: string; text: string }[]>([]);
+  const stepHistoryRef = useRef<string[]>([]);
+  const processingRef = useRef(false);
+  const speakingRef = useRef(false);
+  const isMutedRef = useRef(false);
+  const sharingRef = useRef(false);
+  const cameraOnRef = useRef(false);
+  const annotationIdRef = useRef(0);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatOpenRef = useRef(false);
+  const handleUserMessageRef = useRef<(t: string, s?: "voice" | "chat") => void>(() => {});
+  const customPromptRef = useRef<string | null>(null);
+
+  // Load custom prompt from ?room= param
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get("room");
+    if (roomId) {
+      const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "http://localhost:3000";
+      fetch(`${dashboardUrl}/api/avatar/status`)
+        .then(r => r.json())
+        .then(data => {
+          const room = data.rooms?.find((r: any) => r.roomId === roomId);
+          if (room?.prompt) customPromptRef.current = room.prompt;
+        })
+        .catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
+  useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+  useEffect(() => { chatOpenRef.current = chatOpen; }, [chatOpen]);
+
+  // Auto-hide controls
+  const resetControlsTimer = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => { if (!chatOpen) setShowControls(false); }, 4000);
+  }, [chatOpen]);
+
+  useEffect(() => {
+    if (phase !== "active") return;
+    const h = () => resetControlsTimer();
+    window.addEventListener("mousemove", h);
+    window.addEventListener("touchstart", h);
+    resetControlsTimer();
+    return () => { window.removeEventListener("mousemove", h); window.removeEventListener("touchstart", h); if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current); };
+  }, [phase, resetControlsTimer]);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, chatOpen]);
+
+  // ── Waveform animation loop ──
+  useEffect(() => {
+    if (phase !== "active") return;
+    const canvas = waveCanvasRef.current;
+    if (!canvas) return;
+
+    const resize = () => {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = canvas.clientWidth * dpr;
+      canvas.height = canvas.clientHeight * dpr;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    const ctx = canvas.getContext("2d")!;
+    const freqData = new Uint8Array(BAR_COUNT);
+    const smoothed = smoothedRef.current;
+
+    const draw = () => {
+      animFrameRef.current = requestAnimationFrame(draw);
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      const isSpeaking = speakingRef.current;
+      const analyser = analyserRef.current;
+
+      // Get frequency data or generate ambient
+      if (isSpeaking && analyser) {
+        analyser.getByteFrequencyData(freqData);
+      }
+
+      const totalW = BAR_COUNT * (BAR_W + BAR_GAP) - BAR_GAP;
+      const startX = (w - totalW) / 2;
+      const centerY = h / 2;
+
+      for (let i = 0; i < BAR_COUNT; i++) {
+        let target: number;
+        if (isSpeaking && analyser) {
+          target = (freqData[i] / 255) * MAX_BAR_H;
+        } else {
+          const t = Date.now() / 1400;
+          target = (Math.sin(t + i * 0.3) * 0.5 + 0.5) * 2.5 + 0.5;
+        }
+
+        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.06);
+        const barH = Math.max(1, smoothed[i]);
+        const x = startX + i * (BAR_W + BAR_GAP);
+
+        // Pure white, high contrast against black
+        const alpha = isSpeaking
+          ? Math.min(1, barH / MAX_BAR_H * 1.2 + 0.15)
+          : 0.12;
+
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+
+        const half = barH / 2;
+        ctx.beginPath();
+        ctx.roundRect(x, centerY - half, BAR_W, half, [BAR_W / 2, BAR_W / 2, 0, 0]);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.roundRect(x, centerY, BAR_W, half, [0, 0, BAR_W / 2, BAR_W / 2]);
+        ctx.fill();
+
+        if (isSpeaking && barH > 8) {
+          ctx.fillStyle = `rgba(255,255,255,${alpha * 0.06})`;
+          ctx.beginPath();
+          ctx.roundRect(x, centerY + half + 10, BAR_W, half * 0.4, [0, 0, BAR_W / 2, BAR_W / 2]);
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+    };
+
+    draw();
+    return () => { cancelAnimationFrame(animFrameRef.current); window.removeEventListener("resize", resize); };
+  }, [phase]);
+
+  // ── Cartesia TTS with AudioContext ──
+  const speak = useCallback(async (text: string) => {
+    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
+    speakingRef.current = true;
+    setSpeaking(true);
+    dialogueRef.current.push({ role: "ceres", text });
+    setMessages((prev) => [...prev, { role: "ceres", text }]);
+
+    try {
+      const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (!res.ok) throw new Error(`TTS ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      // Set up AudioContext + Analyser
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContext();
+        analyserRef.current = audioCtxRef.current.createAnalyser();
+        analyserRef.current.fftSize = 128;
+        analyserRef.current.smoothingTimeConstant = 0.75;
+        analyserRef.current.connect(audioCtxRef.current.destination);
+      }
+      if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
+
+      const audio = new Audio(url);
+      currentAudioRef.current = audio;
+      const source = audioCtxRef.current.createMediaElementSource(audio);
+      source.connect(analyserRef.current!);
+
+      audio.onended = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
+      audio.onerror = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
+      await audio.play();
+    } catch (e) {
+      console.error("[tts]", e);
+      speakingRef.current = false;
+      setSpeaking(false);
+    }
+  }, []);
+
+  // ── Capture helpers ──
+  const captureFrame = useCallback((): string | null => {
+    if (!sharingRef.current) return null;
+    const video = screenVideoRef.current; const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return null;
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d"); if (!ctx) return null;
+    ctx.drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.5).replace(/^data:image\/\w+;base64,/, "");
+  }, []);
+
+  const captureCameraFrame = useCallback((): string | null => {
+    if (!cameraOnRef.current) return null;
+    const video = cameraVideoRef.current; const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) return null;
+    const scale = Math.min(1, 640 / video.videoWidth);
+    const w = Math.round(video.videoWidth * scale); const h = Math.round(video.videoHeight * scale);
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d"); if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.6).replace(/^data:image\/\w+;base64,/, "");
+  }, []);
+
+  const showAnnotation = useCallback((screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
+    const id = ++annotationIdRef.current;
+    const ann = { screenshot, cx, cy, label, isCamera };
+    // Only show floating toast if chat is closed
+    if (!chatOpenRef.current) {
+      setAnnotations((prev) => [...prev.slice(-1), { id, ...ann }]);
+      setTimeout(() => setAnnotations((prev) => prev.filter((a) => a.id !== id)), 20000);
+    }
+    // Attach to last Chippy message in chat
+    setMessages((prev) => {
+      const copy = [...prev];
+      for (let i = copy.length - 1; i >= 0; i--) {
+        if (copy[i].role === "ceres") {
+          copy[i] = { ...copy[i], annotation: ann };
+          break;
+        }
+      }
+      return copy;
+    });
+  }, []);
+
+  // ── Claude ──
+  const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null, camOverride?: string|null) => {
+    const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
+    const cameraFrame = camOverride !== undefined ? camOverride : captureCameraFrame();
+    const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ screenshot, cameraFrame, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current }) });
+    return res.json();
+  }, [captureFrame, captureCameraFrame]);
+
+  const handleHighlight = useCallback(async (query: string, frame: string, isCamera: boolean, label?: string) => {
+    try {
+      const vid = isCamera ? cameraVideoRef.current : screenVideoRef.current;
+      let imgW: number, imgH: number;
+      if (isCamera) { const nW=vid?.videoWidth||1280; const s=Math.min(1,640/nW); imgW=Math.round(nW*s); imgH=Math.round((vid?.videoHeight||720)*s); }
+      else { imgW=vid?.videoWidth||1920; imgH=vid?.videoHeight||1080; }
+      const res = await fetch("/api/grounding", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ screenshot: frame, query, imgW, imgH, isCamera }), signal: AbortSignal.timeout(14000) });
+      const data = await res.json();
+      if (data.cx != null) {
+        const l = label || data.label || query;
+        showAnnotation(frame, data.cx, data.cy, l, isCamera);
+      }
+    } catch (e) { console.warn("[highlight]", e); }
+  }, [showAnnotation]);
+
+  // ── Handle user message ──
+  const handleUserMessage = useCallback(async (text: string, source: "voice"|"chat" = "voice") => {
+    if (processingRef.current || speakingRef.current) {
+      if (speakingRef.current) {
+        setShowWait(true);
+        setTimeout(() => setShowWait(false), 2000);
+      }
+      return;
+    }
+    dialogueRef.current.push({ role: "user", text });
+    setMessages((prev) => [...prev, { role: "user", text }]);
+    processingRef.current = true; setThinking(true);
+    try {
+      const ss = captureFrame(); const cam = captureCameraFrame();
+      const r = await processMessage(text, false, ss, cam);
+      setThinking(false);
+      if (!r) { processingRef.current = false; return; }
+      if (r.speech) speak(r.speech);
+      if (r.highlightQuery) {
+        const wantsCam = r.highlightSource === "camera";
+        const frame = (wantsCam && cam) ? cam : ss || cam;
+        console.log("[highlight] query:", r.highlightQuery, "wantsCam:", wantsCam, "hasScreenshot:", !!ss, "hasCameraFrame:", !!cam, "frame:", !!frame);
+        if (frame) {
+          handleHighlight(r.highlightQuery, frame, wantsCam && !!cam, r.actionLabel);
+        } else {
+          console.warn("[highlight] No frame available — screen share or camera must be active");
+        }
+      }
+      if (r.speech) stepHistoryRef.current.push(r.speech);
+      if (r.done || r.action === "done") stepHistoryRef.current = [];
+    } catch (e) { console.error(e); setThinking(false); }
+    processingRef.current = false;
+  }, [processMessage, speak, captureFrame, captureCameraFrame, handleHighlight]);
+
+  useEffect(() => { handleUserMessageRef.current = handleUserMessage; }, [handleUserMessage]);
+
+  // ── Toggles ──
+  const toggleScreenShare = useCallback(async () => {
+    if (isSharing) { screenStreamRef.current?.getTracks().forEach(t=>t.stop()); screenStreamRef.current=null; setIsSharing(false); return; }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      screenStreamRef.current = stream;
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = stream;
+      stream.getVideoTracks()[0].onended = () => { screenStreamRef.current=null; setIsSharing(false); };
+      setIsSharing(true);
+    } catch {}
+  }, [isSharing]);
+
+  const toggleCamera = useCallback(async () => {
+    if (isCameraOn) {
+      cameraStreamRef.current?.getTracks().forEach(t=>t.stop()); cameraStreamRef.current=null;
+      if (cameraVideoRef.current) cameraVideoRef.current.srcObject=null;
+      setIsCameraOn(false); return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      cameraStreamRef.current = stream;
+      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject=stream; await cameraVideoRef.current.play().catch(()=>{}); }
+      setIsCameraOn(true);
+    } catch {}
+  }, [isCameraOn]);
+
+  const toggleMute = useCallback(() => setIsMuted(p=>!p), []);
+
+  // ── Auto-start intro on mount ──
+  const introRanRef = useRef(false);
+  useEffect(() => {
+    if (introRanRef.current) return;
+    introRanRef.current = true;
+    setThinking(true);
+    setTimeout(async () => {
+      try {
+        const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself warmly as Chippy. You're a customer support assistant. Tell the user you're here to help. Mention they can share their screen or camera for visual guidance. Keep it to 2 sentences.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
+        const data = await res.json(); setThinking(false);
+        if (data.speech) speak(data.speech);
+      } catch { setThinking(false); }
+    }, 500);
+  }, [speak]);
+
+  const endSession = useCallback(() => {
+    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
+    screenStreamRef.current?.getTracks().forEach(t=>t.stop());
+    cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
+    dialogueRef.current=[]; stepHistoryRef.current=[];
+    speakingRef.current=false; processingRef.current=false;
+    smoothedRef.current.fill(0);
+    setMessages([]); setAnnotations([]); setIsSharing(false); setIsCameraOn(false);
+    setChatOpen(false); setSpeaking(false); setThinking(false);
+  }, []);
+
+  // ── Speech recognition ──
+  useEffect(() => {
+    if (phase !== "active") return;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR(); rec.continuous=true; rec.interimResults=false; rec.lang="en-US";
+    let stopped = false;
+    rec.onresult = (e: any) => { const last=e.results[e.results.length-1]; if (!last.isFinal) return; const t=last[0].transcript.trim(); if (!t||isMutedRef.current||speakingRef.current) return; handleUserMessageRef.current(t,"voice"); };
+    rec.onerror = (e: any) => { if (!stopped && e.error!=="not-allowed" && e.error!=="service-not-allowed") try { rec.start(); } catch {} };
+    rec.onend = () => { if (!stopped) try { rec.start(); } catch {} };
+    try { rec.start(); } catch {}
+    return () => { stopped=true; try { rec.stop(); } catch {} };
+  }, [phase]);
+
+  useEffect(() => () => {
+    if (currentAudioRef.current) currentAudioRef.current.pause();
+    screenStreamRef.current?.getTracks().forEach(t=>t.stop());
+    cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
+    cancelAnimationFrame(animFrameRef.current);
+  }, []);
+
+  // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
+
+  return (
+    <div className="h-dvh w-full relative overflow-hidden" style={{ background: "#000" }}>
+
+      {/* ── Active ── */}
+      {phase === "active" && (
+        <>
+          <video ref={screenVideoRef} autoPlay playsInline muted style={{ display: "none" }} />
+
+          {/* ── Main waveform area ── */}
+          <div className="animate-fade-in" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <canvas ref={waveCanvasRef} style={{ width: "min(700px, 92vw)", height: 300, display: "block" }} />
+          </div>
+
+          {/* ── Camera PiP (top-right, Zoom-style) ── */}
+          <div style={{
+            position: "absolute", top: 20, left: 20, zIndex: 20,
+            borderRadius: 14, overflow: "hidden",
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "#000", transition: "all 0.4s ease",
+            width: isCameraOn ? 280 : 0, height: isCameraOn ? 210 : 0,
+            opacity: isCameraOn ? 1 : 0,
+          }}>
+            <video ref={cameraVideoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            {/* Name tag */}
+            {isCameraOn && (
+              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "16px 10px 6px", background: "linear-gradient(transparent, rgba(0,0,0,0.6))" }}>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", fontWeight: 400 }}>You</span>
+              </div>
+            )}
+          </div>
+
+          {/* Screen share indicator */}
+          {isSharing && (
+            <div className="animate-fade-in" style={{
+              position: "absolute", top: 16, left: 16, zIndex: 20,
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 12px", borderRadius: 8,
+              background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)",
+            }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ADE80" }} />
+              <span style={{ fontSize: 11, color: "rgba(74,222,128,0.8)", fontWeight: 500 }}>Screen sharing</span>
+            </div>
+          )}
+
+          {/* ── Annotations (cursor + ripple overlay) ── */}
+          <div style={{ position: "absolute", bottom: 80, left: 8, right: 8, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, pointerEvents: "none" }}>
+            {annotations.map((ann) => (
+              <div key={ann.id} className="animate-toast" style={{ pointerEvents: "auto", width: "100%", maxWidth: 340, borderRadius: 12, overflow: "hidden", background: "rgba(12,12,12,0.95)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" }}>
+                <CursorOverlay screenshot={ann.screenshot} cx={ann.cx} cy={ann.cy} isCamera={ann.isCamera} />
+                <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <p style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.6)", margin: 0 }}>{ann.label}</p>
+                  <button onClick={() => setAnnotations(p=>p.filter(a=>a.id!==ann.id))} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.3)", padding: 2 }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Wait indicator */}
+          {showWait && (
+            <div style={{
+              position: "absolute", bottom: 80, left: "50%", transform: "translateX(-50%)",
+              zIndex: 30, padding: "6px 16px", borderRadius: 999,
+              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.1)",
+              fontSize: 12, color: "rgba(255,255,255,0.4)", letterSpacing: "0.04em",
+              animation: "fade-in 0.2s ease, fade-out 0.3s ease 1.7s forwards",
+            }}>
+              Wait until Chippy finishes
+            </div>
+          )}
+
+          {/* ── Controls pill (Tavus-style) ── */}
+          <div style={{
+            position: "absolute", bottom: 24, left: "50%",
+            transform: `translateX(-50%) translateY(${showControls ? 0 : 12}px)`,
+            zIndex: 30, transition: "all 0.5s ease",
+            opacity: showControls ? 1 : 0,
+          }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 2,
+              padding: "8px 10px", borderRadius: 999,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+              backdropFilter: "blur(24px)",
+            }}>
+              <Btn on={isMuted} color="rgba(239,68,68,0.6)" click={toggleMute}>
+                {isMuted
+                  ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.12 1.5-.35 2.18"/></svg>
+                  : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>}
+              </Btn>
+              <Btn on={isCameraOn} color="rgba(74,222,128,0.5)" click={toggleCamera}>
+                {isCameraOn
+                  ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                  : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><line x1="1" y1="1" x2="23" y2="23"/></svg>}
+              </Btn>
+              <Btn on={isSharing} color="rgba(74,222,128,0.5)" click={toggleScreenShare}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              </Btn>
+              <Btn on={chatOpen} color="rgba(255,255,255,0.15)" click={() => setChatOpen(o=>{ if (!o) setAnnotations([]); return !o; })}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </Btn>
+              <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+              <button onClick={endSession} style={{
+                width: 40, height: 40, borderRadius: "50%",
+                background: "rgba(239,68,68,0.7)", border: "none",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: "pointer", transition: "background 0.2s",
+              }}
+                onMouseEnter={(e) => { e.currentTarget.style.background="rgba(239,68,68,0.85)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background="rgba(239,68,68,0.7)"; }}
+              >
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 2.59 3.4z"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* ── Chat panel (right side, Zoom-style) ── */}
+          <div style={{
+            position: "absolute", top: 0, right: 0, bottom: 72, width: chatOpen ? 340 : 0,
+            zIndex: 25, transition: "width 0.3s ease", overflow: "hidden",
+          }}>
+            <div style={{
+              width: 340, height: "100%", display: "flex", flexDirection: "column",
+              background: "rgba(0,0,0,0.95)", borderLeft: "1px solid rgba(255,255,255,0.1)",
+              backdropFilter: "blur(20px)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-soft)" }}>Chat</span>
+                <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.25)", padding: 4 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <div className="scrollbar-hide" style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                {messages.length === 0 && <p style={{ color: "var(--text-ghost)", fontSize: 12, textAlign: "center", marginTop: 40 }}>No messages yet</p>}
+                {messages.map((msg, i) => (
+                  <div key={i} className="animate-msg" style={{ marginBottom: 14 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: msg.role === "user" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.7)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                      {msg.role === "user" ? "You" : "Chippy"}
+                    </span>
+                    <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text-soft)", margin: "3px 0 0" }}>
+                      {msg.text}
+                    </p>
+                    {msg.annotation && (
+                      <div style={{ marginTop: 8, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", boxShadow: "0 2px 12px rgba(0,0,0,0.3)" }}>
+                        <CursorOverlay screenshot={msg.annotation.screenshot} cx={msg.annotation.cx} cy={msg.annotation.cy} isCamera={msg.annotation.isCamera} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+              <form style={{ padding: "8px 12px 14px", borderTop: "1px solid rgba(255,255,255,0.05)" }}
+                onSubmit={(e) => { e.preventDefault(); const t=chatInput.trim(); if (!t) return; setChatInput(""); handleUserMessage(t,"chat"); }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 12px" }}>
+                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..."
+                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--text)", fontSize: 13, fontFamily: "inherit" }} />
+                  <button type="submit" style={{ width: 26, height: 26, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "white", flexShrink: 0 }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </>
+      )}
+
+      <canvas ref={canvasRef} style={{ display: "none" }} />
+    </div>
+  );
+}
+
+function Btn({ on, color, click, children }: { on: boolean; color: string; click: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={click} style={{
+      width: 40, height: 40, borderRadius: "50%",
+      background: on ? color : "transparent",
+      border: "none", display: "flex", alignItems: "center", justifyContent: "center",
+      cursor: "pointer", transition: "background 0.2s",
+    }}
+      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background="rgba(255,255,255,0.08)"; }}
+      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = on ? color : "transparent"; }}
+    >{children}</button>
+  );
+}
+
+/** Animated overlay — cursor+ripple for screen, crosshair+ring for camera */
+function CursorOverlay({ screenshot, cx, cy, isCamera }: { screenshot: string; cx: number; cy: number; isCamera?: boolean }) {
+  const vars = {
+    "--cx": `${cx * 100}%`,
+    "--cy": `${cy * 100}%`,
+  } as React.CSSProperties;
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden", ...vars }}>
+      <img
+        src={`data:image/jpeg;base64,${screenshot}`}
+        alt=""
+        style={{ width: "100%", display: "block", filter: "brightness(0.85)" }}
+      />
+
+      {isCamera ? (
+        /* Camera: static crosshair + steady ring */
+        <div style={{
+          position: "absolute",
+          left: `${cx * 100}%`, top: `${cy * 100}%`,
+          transform: "translate(-50%, -50%)",
+          pointerEvents: "none",
+        }}>
+          <div style={{
+            width: 18, height: 18, borderRadius: "50%",
+            border: "1.5px solid rgba(255,255,255,0.7)",
+            position: "absolute", top: -9, left: -9,
+          }} />
+          <div style={{
+            width: 4, height: 4, borderRadius: "50%",
+            background: "rgba(255,255,255,0.9)",
+            position: "absolute", top: -2, left: -2,
+          }} />
+        </div>
+      ) : (
+        /* Screen: animated cursor + ripple */
+        <>
+          <div className="ripple-ring ripple-1" />
+          <div className="ripple-ring ripple-2" />
+          <div className="ripple-ring ripple-3" />
+          <div className="cursor-animate" style={{ position: "absolute", pointerEvents: "none", marginLeft: -2, marginTop: -2 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.5))" }}>
+              <path d="M5 3l14 9-7 1.5L8.5 21z" fill="white" stroke="rgba(0,0,0,0.4)" strokeWidth="1" strokeLinejoin="round" />
+            </svg>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
