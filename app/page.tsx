@@ -240,7 +240,7 @@ export default function Home() {
       setAnnotations((prev) => [...prev.slice(-1), { id, ...ann }]);
       setTimeout(() => setAnnotations((prev) => prev.filter((a) => a.id !== id)), 20000);
     }
-    // Attach to last Chippy message in chat
+    // Attach to last N22 message in chat
     setMessages((prev) => {
       const copy = [...prev];
       for (let i = copy.length - 1; i >= 0; i--) {
@@ -351,7 +351,7 @@ export default function Home() {
     setTimeout(async () => {
       try {
         const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself warmly as Chippy. You're a customer support assistant. Tell the user you're here to help. Mention they can share their screen or camera for visual guidance. Keep it to 2 sentences.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
+          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself warmly as N22. You're a customer support assistant. Tell the user you're here to help. Mention they can share their screen or camera for visual guidance. Keep it to 2 sentences.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
         const data = await res.json(); setThinking(false);
         if (data.speech) speak(data.speech);
       } catch { setThinking(false); }
@@ -460,7 +460,7 @@ export default function Home() {
               fontSize: 12, color: "rgba(255,255,255,0.4)", letterSpacing: "0.04em",
               animation: "fade-in 0.2s ease, fade-out 0.3s ease 1.7s forwards",
             }}>
-              Wait until Chippy finishes
+              Wait until N22 finishes
             </div>
           )}
 
@@ -529,7 +529,7 @@ export default function Home() {
                 {messages.map((msg, i) => (
                   <div key={i} className="animate-msg" style={{ marginBottom: 14 }}>
                     <span style={{ fontSize: 11, fontWeight: 600, color: msg.role === "user" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.7)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                      {msg.role === "user" ? "You" : "Chippy"}
+                      {msg.role === "user" ? "You" : "N22"}
                     </span>
                     <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text-soft)", margin: "3px 0 0" }}>
                       {msg.text}

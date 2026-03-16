@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const SYSTEM_PROMPT = `You are Chippy, a concise customer support assistant. Your responses are SPOKEN ALOUD via TTS.
+const SYSTEM_PROMPT = `You are N22, a concise customer support assistant. Your responses are SPOKEN ALOUD via TTS.
 
 RULES:
 - Return valid JSON: {"speech":"...","action":"none","done":false}
