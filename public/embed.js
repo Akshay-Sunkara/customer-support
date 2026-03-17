@@ -24,8 +24,17 @@
     ".n22-bubble{position:fixed;bottom:24px;z-index:2147483646;width:56px;height:56px;border-radius:14px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.2),0 0 0 1px rgba(255,255,255,0.06);transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s ease;}",
     ".n22-bubble:hover{transform:scale(1.05);box-shadow:0 4px 20px rgba(0,0,0,0.28),0 0 0 1px rgba(255,255,255,0.08);}",
     ".n22-bubble:active{transform:scale(0.96);}",
-    ".n22-bubble svg{transition:transform .3s cubic-bezier(.22,1,.36,1);}",
-    ".n22-bubble[data-open='true'] svg{transform:rotate(90deg);}",
+    ".n22-bubble .n22-icon{display:flex;align-items:center;gap:3px;height:20px;}",
+    ".n22-bubble .n22-bar{width:3px;border-radius:2px;background:white;transition:height .3s cubic-bezier(.22,1,.36,1),opacity .3s ease;}",
+    ".n22-bubble .n22-bar:nth-child(1){animation:n22-breathe 2s ease-in-out infinite;}",
+    ".n22-bubble .n22-bar:nth-child(2){animation:n22-breathe 2s ease-in-out 0.3s infinite;}",
+    ".n22-bubble .n22-bar:nth-child(3){animation:n22-breathe 2s ease-in-out 0.6s infinite;}",
+    ".n22-bubble .n22-bar:nth-child(4){animation:n22-breathe 2s ease-in-out 0.15s infinite;}",
+    ".n22-bubble .n22-bar:nth-child(5){animation:n22-breathe 2s ease-in-out 0.45s infinite;}",
+    "@keyframes n22-breathe{0%,100%{height:6px;opacity:0.4;}50%{height:18px;opacity:1;}}",
+    ".n22-bubble .n22-close{position:absolute;transition:opacity .25s ease,transform .25s cubic-bezier(.22,1,.36,1);opacity:0;transform:rotate(-90deg) scale(0.5);}",
+    ".n22-bubble[data-open='true'] .n22-icon .n22-bar{animation:none!important;height:0px!important;opacity:0!important;}",
+    ".n22-bubble[data-open='true'] .n22-close{opacity:1;transform:rotate(0) scale(1);}",
     ".n22-panel{position:fixed;bottom:96px;z-index:2147483647;width:380px;height:min(640px,calc(100vh - 130px));border-radius:6px;overflow:hidden;box-shadow:0 16px 64px rgba(0,0,0,0.25),0 2px 8px rgba(0,0,0,0.12),0 0 0 1px rgba(255,255,255,0.04);opacity:0;transform:translateY(12px) scale(0.98);pointer-events:none;transition:opacity .25s cubic-bezier(.22,1,.36,1),transform .25s cubic-bezier(.22,1,.36,1);}",
     ".n22-panel[data-open='true']{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;}",
     ".n22-panel iframe{width:100%;height:100%;border:none;border-radius:6px;}",
@@ -50,9 +59,16 @@
   bubble.style[POSITION === "left" ? "left" : "right"] = "24px";
   bubble.setAttribute("aria-label", "Open support chat");
   bubble.innerHTML =
-    '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' +
-    "</svg>";
+    '<div class="n22-icon">' +
+    '<div class="n22-bar"></div>' +
+    '<div class="n22-bar"></div>' +
+    '<div class="n22-bar"></div>' +
+    '<div class="n22-bar"></div>' +
+    '<div class="n22-bar"></div>' +
+    '</div>' +
+    '<svg class="n22-close" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round">' +
+    '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>' +
+    '</svg>';
   bubble.addEventListener("click", toggle);
 
   // Panel
