@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
-  const apiKey = process.env.DEEPGRAM_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "Missing DEEPGRAM_API_KEY" }, { status: 500 });
+    return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
   }
 
   try {
@@ -13,30 +13,33 @@ export async function POST(req: Request) {
     }
 
     const contentType = req.headers.get("content-type") || "audio/webm";
+    const ext = contentType.includes("mp4") ? "mp4" : "webm";
 
-    const res = await fetch(
-      "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Token ${apiKey}`,
-          "Content-Type": contentType,
-        },
-        body: audioBlob,
-      },
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new Blob([audioBlob], { type: contentType }),
+      `audio.${ext}`,
     );
+    formData.append("model", "whisper-1");
+    formData.append("language", "en");
+
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: formData,
+    });
 
     if (!res.ok) {
       const err = await res.text();
-      console.error("[stt] Deepgram error:", res.status, err);
+      console.error("[stt] Whisper error:", res.status, err);
       return NextResponse.json({ error: "STT failed" }, { status: res.status });
     }
 
     const data = await res.json();
-    const transcript =
-      data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
-
-    return NextResponse.json({ transcript });
+    return NextResponse.json({ transcript: data.text || "" });
   } catch (e) {
     console.error("[stt] Error:", e);
     return NextResponse.json({ error: "STT error" }, { status: 500 });

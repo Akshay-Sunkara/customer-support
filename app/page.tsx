@@ -55,11 +55,10 @@ export default function Home() {
     const roomId = params.get("room");
     if (roomId) {
       const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "http://localhost:3000";
-      fetch(`${dashboardUrl}/api/avatar/status`)
+      fetch(`${dashboardUrl}/api/avatar/room?id=${encodeURIComponent(roomId)}`)
         .then(r => r.json())
         .then(data => {
-          const room = data.rooms?.find((r: any) => r.roomId === roomId);
-          if (room?.prompt) customPromptRef.current = room.prompt;
+          if (data.prompt) customPromptRef.current = data.prompt;
         })
         .catch(() => {});
     }
