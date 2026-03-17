@@ -23,6 +23,11 @@ export default function Home() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [showControls, setShowControls] = useState(true);
   const [showWait, setShowWait] = useState(false);
+  const [isEmbed, setIsEmbed] = useState(false);
+
+  useEffect(() => { try { setIsEmbed(window.self !== window.top); } catch { setIsEmbed(true); } }, []);
+
+  const chatWidth = isEmbed ? 260 : 380;
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
@@ -132,17 +137,17 @@ export default function Home() {
           target = (freqData[i] / 255) * MAX_BAR_H;
         } else {
           const t = Date.now() / 1400;
-          target = (Math.sin(t + i * 0.3) * 0.5 + 0.5) * 2.5 + 0.5;
+          target = (Math.sin(t + i * 0.3) * 0.5 + 0.5) * 18 + 6;
         }
 
-        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.06);
+        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.12);
         const barH = Math.max(1, smoothed[i]);
         const x = startX + i * (BAR_W + BAR_GAP);
 
         // Pure white, high contrast against black
         const alpha = isSpeaking
           ? Math.min(1, barH / MAX_BAR_H * 1.2 + 0.15)
-          : 0.12;
+          : Math.min(0.5, barH / MAX_BAR_H * 1.5 + 0.25);
 
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
 
@@ -613,17 +618,17 @@ export default function Home() {
 
           {/* ── Chat panel (right side) ── */}
           <div style={{
-            position: "absolute", top: 0, right: 0, bottom: 64, width: chatOpen ? 260 : 0,
+            position: "absolute", top: 0, right: 0, bottom: 64, width: chatOpen ? chatWidth : 0,
             zIndex: 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
           }}>
             <div style={{
-              width: 260, height: "100%", display: "flex", flexDirection: "column",
+              width: chatWidth, height: "100%", display: "flex", flexDirection: "column",
               background: "rgba(10,10,10,0.97)", borderLeft: "1px solid rgba(255,255,255,0.06)",
               backdropFilter: "blur(32px)",
             }}>
               {/* Header */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                <span style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.4)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Chat</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: isEmbed ? "12px 14px" : "14px 20px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                <span style={{ fontSize: isEmbed ? 11 : 12, fontWeight: 500, color: "rgba(255,255,255,0.4)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Chat</span>
                 <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.2)", padding: 4, borderRadius: 4, transition: "color 0.15s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.2)"; }}
@@ -632,14 +637,14 @@ export default function Home() {
                 </button>
               </div>
               {/* Messages */}
-              <div className="scrollbar-hide" style={{ flex: 1, overflowY: "auto", padding: "10px 14px" }}>
+              <div className="scrollbar-hide" style={{ flex: 1, overflowY: "auto", padding: isEmbed ? "10px 14px" : "14px 20px" }}>
                 {messages.length === 0 && <p style={{ color: "rgba(255,255,255,0.06)", fontSize: 11, textAlign: "center", marginTop: 40, fontWeight: 400 }}>No messages yet</p>}
                 {messages.map((msg, i) => (
                   <div key={i} className="animate-msg" style={{ marginBottom: 12 }}>
                     <span style={{ fontSize: 10, fontWeight: 500, color: msg.role === "user" ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.5)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
                       {msg.role === "user" ? "You" : "N22"}
                     </span>
-                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: msg.role === "user" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 400 }}>
+                    <p style={{ fontSize: isEmbed ? 12.5 : 13.5, lineHeight: 1.5, color: msg.role === "user" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 400 }}>
                       {msg.text}
                     </p>
                     {msg.annotation && (
@@ -652,7 +657,7 @@ export default function Home() {
                 <div ref={chatEndRef} />
               </div>
               {/* Input */}
-              <form style={{ padding: "8px 10px 12px", borderTop: "1px solid rgba(255,255,255,0.04)" }}
+              <form style={{ padding: isEmbed ? "8px 10px 12px" : "10px 16px 14px", borderTop: "1px solid rgba(255,255,255,0.04)" }}
                 onSubmit={(e) => { e.preventDefault(); const t=chatInput.trim(); if (!t) return; setChatInput(""); handleUserMessage(t,"chat"); }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: "7px 10px", border: "1px solid rgba(255,255,255,0.04)", transition: "border-color 0.15s" }}>
                   <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..."

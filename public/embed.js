@@ -31,7 +31,7 @@
     ".n22-bubble .n22-bar:nth-child(3){animation:n22-breathe 2s ease-in-out 0.6s infinite;}",
     ".n22-bubble .n22-bar:nth-child(4){animation:n22-breathe 2s ease-in-out 0.15s infinite;}",
     ".n22-bubble .n22-bar:nth-child(5){animation:n22-breathe 2s ease-in-out 0.45s infinite;}",
-    "@keyframes n22-breathe{0%,100%{height:6px;opacity:0.4;}50%{height:18px;opacity:1;}}",
+    "@keyframes n22-breathe{0%,100%{height:8px;opacity:0.55;}50%{height:20px;opacity:1;}}",
     ".n22-bubble .n22-close{position:absolute;transition:opacity .25s ease,transform .25s cubic-bezier(.22,1,.36,1);opacity:0;transform:rotate(-90deg) scale(0.5);}",
     ".n22-bubble[data-open='true'] .n22-icon .n22-bar{animation:none!important;height:0px!important;opacity:0!important;}",
     ".n22-bubble[data-open='true'] .n22-close{opacity:1;transform:rotate(0) scale(1);}",
@@ -66,8 +66,8 @@
     '<div class="n22-bar"></div>' +
     '<div class="n22-bar"></div>' +
     '</div>' +
-    '<svg class="n22-close" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round">' +
-    '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>' +
+    '<svg class="n22-close" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+    '<polyline points="6 9 12 15 18 9"/>' +
     '</svg>';
   bubble.addEventListener("click", toggle);
 
