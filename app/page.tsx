@@ -519,7 +519,7 @@ export default function Home() {
             borderRadius: 6, overflow: "hidden",
             border: "1px solid rgba(255,255,255,0.08)",
             background: "#000", transition: "all 0.4s ease",
-            width: isCameraOn ? 180 : 0, height: isCameraOn ? 110 : 0,
+            width: isCameraOn ? (isEmbed ? 180 : 360) : 0, height: isCameraOn ? (isEmbed ? 110 : 220) : 0,
             opacity: isCameraOn ? 1 : 0,
           }}>
             <video ref={cameraVideoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -618,7 +618,7 @@ export default function Home() {
 
           {/* ── Chat panel (right side) ── */}
           <div style={{
-            position: "absolute", top: 0, right: 0, bottom: 64, width: chatOpen ? chatWidth : 0,
+            position: "absolute", top: 0, right: 0, bottom: 0, width: chatOpen ? chatWidth : 0,
             zIndex: 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
           }}>
             <div style={{
