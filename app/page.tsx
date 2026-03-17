@@ -368,71 +368,69 @@ export default function Home() {
     setChatOpen(false); setSpeaking(false); setThinking(false);
   }, []);
 
-  // ── Speech recognition (MediaRecorder + Deepgram for Safari support) ──
+  // ── Speech recognition (native browser API — works on Safari + Chrome) ──
   useEffect(() => {
     if (phase !== "active") return;
-    let stopped = false;
-    let micStream: MediaStream | null = null;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { console.warn("[stt] SpeechRecognition not supported"); return; }
 
-    async function startListening() {
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch {
+    let stopped = false;
+    let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    // Safari doesn't handle continuous well — use short sessions and restart
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+
+    rec.onresult = (e: any) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (!e.results[i].isFinal) continue;
+        const t = e.results[i][0].transcript.trim();
+        if (!t || isMutedRef.current || speakingRef.current) continue;
+        handleUserMessageRef.current(t, "voice");
+      }
+    };
+
+    rec.onend = () => {
+      // Restart after each utterance (Safari ends after each phrase)
+      if (!stopped) {
+        restartTimeout = setTimeout(() => {
+          if (!stopped) try { rec.start(); } catch {}
+        }, 150);
+      }
+    };
+
+    rec.onerror = (e: any) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         console.warn("[stt] Mic permission denied");
         return;
       }
-
-      function recordChunk() {
-        if (stopped || !micStream) return;
-        // Skip if muted or agent is speaking
-        if (isMutedRef.current || speakingRef.current) {
-          setTimeout(recordChunk, 500);
-          return;
-        }
-
-        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/mp4";
-        let recorder: MediaRecorder;
-        try {
-          recorder = new MediaRecorder(micStream!, { mimeType });
-        } catch {
-          recorder = new MediaRecorder(micStream!);
-        }
-        const chunks: Blob[] = [];
-        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-
-        recorder.onstop = async () => {
-          if (stopped || chunks.length === 0) { setTimeout(recordChunk, 100); return; }
-          const blob = new Blob(chunks, { type: recorder.mimeType });
-          // Skip very short recordings (likely silence)
-          if (blob.size < 2000) { setTimeout(recordChunk, 100); return; }
-          try {
-            const res = await fetch("/api/stt", {
-              method: "POST",
-              headers: { "Content-Type": recorder.mimeType },
-              body: blob,
-            });
-            const data = await res.json();
-            if (data.transcript && data.transcript.trim() && !isMutedRef.current && !speakingRef.current) {
-              handleUserMessageRef.current(data.transcript.trim(), "voice");
-            }
-          } catch (e) { console.warn("[stt] transcription error", e); }
-          if (!stopped) setTimeout(recordChunk, 100);
-        };
-
-        recorder.start();
-        // Record in 3-second chunks
-        setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 3000);
+      // Restart on transient errors
+      if (!stopped) {
+        restartTimeout = setTimeout(() => {
+          if (!stopped) try { rec.start(); } catch {}
+        }, 300);
       }
+    };
 
-      recordChunk();
-    }
+    // Request mic permission first (Safari needs this before SpeechRecognition works)
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        // Got permission — stop the stream (SpeechRecognition manages its own)
+        stream.getTracks().forEach(t => t.stop());
+        if (!stopped) try { rec.start(); } catch {}
+      })
+      .catch(() => {
+        // Try starting anyway — Chrome doesn't need getUserMedia first
+        if (!stopped) try { rec.start(); } catch {}
+      });
 
-    startListening();
     return () => {
       stopped = true;
-      micStream?.getTracks().forEach(t => t.stop());
+      if (restartTimeout) clearTimeout(restartTimeout);
+      try { rec.stop(); } catch {}
     };
   }, [phase]);
 
