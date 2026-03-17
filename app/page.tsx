@@ -461,7 +461,7 @@ export default function Home() {
   // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
 
   return (
-    <div className="h-dvh w-full relative overflow-hidden" style={{ background: "#0A0A0A" }}>
+    <div className="h-dvh w-full relative overflow-hidden" style={{ background: "#0A0A0A", borderRadius: isEmbed ? 6 : 0 }}>
 
       {/* ── Ended screen ── */}
       {phase === "ended" && (
@@ -619,7 +619,7 @@ export default function Home() {
           {/* ── Chat panel (right side) ── */}
           <div style={{
             position: "absolute", top: 0, right: 0, bottom: 0, width: chatOpen ? chatWidth : 0,
-            zIndex: 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
+            zIndex: isEmbed ? 35 : 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
           }}>
             <div style={{
               width: chatWidth, height: "100%", display: "flex", flexDirection: "column",
