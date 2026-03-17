@@ -13,10 +13,11 @@
 
 body {
   margin: 0;
-  background: #000;
+  background: #0A0A0A;
   color: #fff;
-  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.01em;
   overflow: hidden;
 }
 

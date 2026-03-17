@@ -11,7 +11,7 @@ const BAR_GAP = 4;
 const MAX_BAR_H = 120;
 
 export default function Home() {
-  const [phase] = useState<"active">("active");
+  const [phase, setPhase] = useState<"active" | "ending" | "ended">("active");
   const [isMuted, setIsMuted] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
@@ -334,16 +334,17 @@ export default function Home() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
       cameraStreamRef.current = stream;
-      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject=stream; await cameraVideoRef.current.play().catch(()=>{}); }
+      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject=stream; await cameraVideoRef.current.play().catch((e)=>console.warn("[camera] play error:", e)); }
       setIsCameraOn(true);
-    } catch {}
+    } catch (e) { console.error("[camera] Failed to start camera:", e); }
   }, [isCameraOn]);
 
   const toggleMute = useCallback(() => setIsMuted(p=>!p), []);
 
-  // ── Auto-start intro on mount ──
+  // ── Auto-start intro on mount or restart ──
   const introRanRef = useRef(false);
   useEffect(() => {
+    if (phase !== "active") return;
     if (introRanRef.current) return;
     introRanRef.current = true;
     setThinking(true);
@@ -355,18 +356,29 @@ export default function Home() {
         if (data.speech) speak(data.speech);
       } catch { setThinking(false); }
     }, 500);
-  }, [speak]);
+  }, [speak, phase]);
 
   const endSession = useCallback(() => {
+    if (phase === "ending" || phase === "ended") return;
+    // Stop audio/streams immediately
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     dialogueRef.current=[]; stepHistoryRef.current=[];
     speakingRef.current=false; processingRef.current=false;
-    smoothedRef.current.fill(0);
-    setMessages([]); setAnnotations([]); setIsSharing(false); setIsCameraOn(false);
     setChatOpen(false); setSpeaking(false); setThinking(false);
-  }, []);
+    setIsSharing(false); setIsCameraOn(false);
+
+    // Animate out
+    setPhase("ending");
+    setTimeout(() => {
+      smoothedRef.current.fill(0);
+      setMessages([]); setAnnotations([]);
+      setPhase("ended");
+      // Notify parent iframe (bubble embed) to close
+      try { window.parent.postMessage({ type: "n22-session-end" }, "*"); } catch {}
+    }, 1200);
+  }, [phase]);
 
   // ── Speech recognition (native browser API — works on Safari + Chrome) ──
   useEffect(() => {
@@ -444,23 +456,63 @@ export default function Home() {
   // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
 
   return (
-    <div className="h-dvh w-full relative overflow-hidden" style={{ background: "#000" }}>
+    <div className="h-dvh w-full relative overflow-hidden" style={{ background: "#0A0A0A" }}>
 
-      {/* ── Active ── */}
-      {phase === "active" && (
+      {/* ── Ended screen ── */}
+      {phase === "ended" && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", gap: 16,
+          animation: "fade-in 0.5s ease both",
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 12,
+            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2z"/>
+            </svg>
+          </div>
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", fontWeight: 400, letterSpacing: "-0.01em" }}>
+            Session ended
+          </span>
+          <button
+            onClick={() => { setPhase("active"); introRanRef.current = false; }}
+            style={{
+              marginTop: 8, padding: "8px 20px", borderRadius: 8,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)",
+              color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: 500,
+              cursor: "pointer", transition: "all 0.15s", fontFamily: "inherit",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}
+          >
+            Start new session
+          </button>
+        </div>
+      )}
+
+      {/* ── Active / Ending ── */}
+      {(phase === "active" || phase === "ending") && (
         <>
           <video ref={screenVideoRef} autoPlay playsInline muted style={{ display: "none" }} />
 
           {/* ── Main waveform area ── */}
-          <div className="animate-fade-in" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div className="animate-fade-in" style={{
+            position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+            opacity: phase === "ending" ? 0 : 1,
+            transform: phase === "ending" ? "scale(0.95)" : "scale(1)",
+            transition: "opacity 0.8s ease, transform 0.8s cubic-bezier(.22,1,.36,1)",
+          }}>
             <canvas ref={waveCanvasRef} style={{ width: "min(700px, 92vw)", height: 300, display: "block" }} />
           </div>
 
           {/* ── Camera PiP (top-right, Zoom-style) ── */}
           <div style={{
             position: "absolute", top: 20, left: 20, zIndex: 20,
-            borderRadius: 14, overflow: "hidden",
-            border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 6, overflow: "hidden",
+            border: "1px solid rgba(255,255,255,0.08)",
             background: "#000", transition: "all 0.4s ease",
             width: isCameraOn ? 280 : 0, height: isCameraOn ? 210 : 0,
             opacity: isCameraOn ? 1 : 0,
@@ -515,18 +567,18 @@ export default function Home() {
             </div>
           )}
 
-          {/* ── Controls pill (Tavus-style) ── */}
+          {/* ── Controls pill ── */}
           <div style={{
-            position: "absolute", bottom: 24, left: "50%",
-            transform: `translateX(-50%) translateY(${showControls ? 0 : 12}px)`,
-            zIndex: 30, transition: "all 0.5s ease",
-            opacity: showControls ? 1 : 0,
+            position: "absolute", bottom: 20, left: "50%",
+            transform: `translateX(-50%) translateY(${showControls && phase !== "ending" ? 0 : 20}px)`,
+            zIndex: 30, transition: "all 0.5s cubic-bezier(.22,1,.36,1)",
+            opacity: showControls && phase !== "ending" ? 1 : 0,
           }}>
             <div style={{
               display: "flex", alignItems: "center", gap: 2,
-              padding: "8px 10px", borderRadius: 999,
-              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
-              backdropFilter: "blur(24px)",
+              padding: "6px 8px", borderRadius: 12,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(32px)",
             }}>
               <Btn on={isMuted} color="rgba(239,68,68,0.6)" click={toggleMute}>
                 {isMuted
@@ -546,8 +598,8 @@ export default function Home() {
               </Btn>
               <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
               <button onClick={endSession} style={{
-                width: 40, height: 40, borderRadius: "50%",
-                background: "rgba(239,68,68,0.7)", border: "none",
+                width: 38, height: 38, borderRadius: 10,
+                background: "rgba(239,68,68,0.6)", border: "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", transition: "background 0.2s",
               }}
@@ -559,34 +611,39 @@ export default function Home() {
             </div>
           </div>
 
-          {/* ── Chat panel (right side, Zoom-style) ── */}
+          {/* ── Chat panel (right side) ── */}
           <div style={{
-            position: "absolute", top: 0, right: 0, bottom: 72, width: chatOpen ? 340 : 0,
-            zIndex: 25, transition: "width 0.3s ease", overflow: "hidden",
+            position: "absolute", top: 0, right: 0, bottom: 64, width: chatOpen ? 320 : 0,
+            zIndex: 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
           }}>
             <div style={{
-              width: 340, height: "100%", display: "flex", flexDirection: "column",
-              background: "rgba(0,0,0,0.95)", borderLeft: "1px solid rgba(255,255,255,0.1)",
-              backdropFilter: "blur(20px)",
+              width: 320, height: "100%", display: "flex", flexDirection: "column",
+              background: "rgba(10,10,10,0.97)", borderLeft: "1px solid rgba(255,255,255,0.06)",
+              backdropFilter: "blur(32px)",
             }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-soft)" }}>Chat</span>
-                <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.25)", padding: 4 }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              {/* Header */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                <span style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.4)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Chat</span>
+                <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.2)", padding: 4, borderRadius: 4, transition: "color 0.15s" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.2)"; }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
-              <div className="scrollbar-hide" style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                {messages.length === 0 && <p style={{ color: "var(--text-ghost)", fontSize: 12, textAlign: "center", marginTop: 40 }}>No messages yet</p>}
+              {/* Messages */}
+              <div className="scrollbar-hide" style={{ flex: 1, overflowY: "auto", padding: "10px 14px" }}>
+                {messages.length === 0 && <p style={{ color: "rgba(255,255,255,0.06)", fontSize: 11, textAlign: "center", marginTop: 40, fontWeight: 400 }}>No messages yet</p>}
                 {messages.map((msg, i) => (
-                  <div key={i} className="animate-msg" style={{ marginBottom: 14 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: msg.role === "user" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.7)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                  <div key={i} className="animate-msg" style={{ marginBottom: 12 }}>
+                    <span style={{ fontSize: 10, fontWeight: 500, color: msg.role === "user" ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.5)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
                       {msg.role === "user" ? "You" : "N22"}
                     </span>
-                    <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text-soft)", margin: "3px 0 0" }}>
+                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: msg.role === "user" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 400 }}>
                       {msg.text}
                     </p>
                     {msg.annotation && (
-                      <div style={{ marginTop: 8, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", boxShadow: "0 2px 12px rgba(0,0,0,0.3)" }}>
+                      <div style={{ marginTop: 6, borderRadius: 4, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
                         <CursorOverlay screenshot={msg.annotation.screenshot} cx={msg.annotation.cx} cy={msg.annotation.cy} isCamera={msg.annotation.isCamera} />
                       </div>
                     )}
@@ -594,13 +651,14 @@ export default function Home() {
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <form style={{ padding: "8px 12px 14px", borderTop: "1px solid rgba(255,255,255,0.05)" }}
+              {/* Input */}
+              <form style={{ padding: "8px 10px 12px", borderTop: "1px solid rgba(255,255,255,0.04)" }}
                 onSubmit={(e) => { e.preventDefault(); const t=chatInput.trim(); if (!t) return; setChatInput(""); handleUserMessage(t,"chat"); }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "8px 12px" }}>
-                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..."
-                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--text)", fontSize: 13, fontFamily: "inherit" }} />
-                  <button type="submit" style={{ width: 26, height: 26, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "white", flexShrink: 0 }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: "7px 10px", border: "1px solid rgba(255,255,255,0.04)", transition: "border-color 0.15s" }}>
+                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..."
+                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "rgba(255,255,255,0.7)", fontSize: 12, fontFamily: "inherit", fontWeight: 400 }} />
+                  <button type="submit" style={{ width: 24, height: 24, borderRadius: 4, background: chatInput.trim() ? "rgba(255,255,255,0.1)" : "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: chatInput.trim() ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.15)", flexShrink: 0, transition: "all 0.15s" }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
                   </button>
                 </div>
               </form>
@@ -617,12 +675,12 @@ export default function Home() {
 function Btn({ on, color, click, children }: { on: boolean; color: string; click: () => void; children: React.ReactNode }) {
   return (
     <button onClick={click} style={{
-      width: 40, height: 40, borderRadius: "50%",
+      width: 38, height: 38, borderRadius: 10,
       background: on ? color : "transparent",
       border: "none", display: "flex", alignItems: "center", justifyContent: "center",
-      cursor: "pointer", transition: "background 0.2s",
+      cursor: "pointer", transition: "all 0.15s ease",
     }}
-      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background="rgba(255,255,255,0.08)"; }}
+      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background="rgba(255,255,255,0.06)"; }}
       onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = on ? color : "transparent"; }}
     >{children}</button>
   );
