@@ -369,18 +369,72 @@ export default function Home() {
     setChatOpen(false); setSpeaking(false); setThinking(false);
   }, []);
 
-  // ── Speech recognition ──
+  // ── Speech recognition (MediaRecorder + Deepgram for Safari support) ──
   useEffect(() => {
     if (phase !== "active") return;
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) return;
-    const rec = new SR(); rec.continuous=true; rec.interimResults=false; rec.lang="en-US";
     let stopped = false;
-    rec.onresult = (e: any) => { const last=e.results[e.results.length-1]; if (!last.isFinal) return; const t=last[0].transcript.trim(); if (!t||isMutedRef.current||speakingRef.current) return; handleUserMessageRef.current(t,"voice"); };
-    rec.onerror = (e: any) => { if (!stopped && e.error!=="not-allowed" && e.error!=="service-not-allowed") try { rec.start(); } catch {} };
-    rec.onend = () => { if (!stopped) try { rec.start(); } catch {} };
-    try { rec.start(); } catch {}
-    return () => { stopped=true; try { rec.stop(); } catch {} };
+    let micStream: MediaStream | null = null;
+
+    async function startListening() {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        console.warn("[stt] Mic permission denied");
+        return;
+      }
+
+      function recordChunk() {
+        if (stopped || !micStream) return;
+        // Skip if muted or agent is speaking
+        if (isMutedRef.current || speakingRef.current) {
+          setTimeout(recordChunk, 500);
+          return;
+        }
+
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/mp4";
+        let recorder: MediaRecorder;
+        try {
+          recorder = new MediaRecorder(micStream!, { mimeType });
+        } catch {
+          recorder = new MediaRecorder(micStream!);
+        }
+        const chunks: Blob[] = [];
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+        recorder.onstop = async () => {
+          if (stopped || chunks.length === 0) { setTimeout(recordChunk, 100); return; }
+          const blob = new Blob(chunks, { type: recorder.mimeType });
+          // Skip very short recordings (likely silence)
+          if (blob.size < 2000) { setTimeout(recordChunk, 100); return; }
+          try {
+            const res = await fetch("/api/stt", {
+              method: "POST",
+              headers: { "Content-Type": recorder.mimeType },
+              body: blob,
+            });
+            const data = await res.json();
+            if (data.transcript && data.transcript.trim() && !isMutedRef.current && !speakingRef.current) {
+              handleUserMessageRef.current(data.transcript.trim(), "voice");
+            }
+          } catch (e) { console.warn("[stt] transcription error", e); }
+          if (!stopped) setTimeout(recordChunk, 100);
+        };
+
+        recorder.start();
+        // Record in 3-second chunks
+        setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 3000);
+      }
+
+      recordChunk();
+    }
+
+    startListening();
+    return () => {
+      stopped = true;
+      micStream?.getTracks().forEach(t => t.stop());
+    };
   }, [phase]);
 
   useEffect(() => () => {
