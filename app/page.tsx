@@ -341,10 +341,30 @@ export default function Home() {
       cameraStreamRef.current = stream;
       if (cameraVideoRef.current) { cameraVideoRef.current.srcObject=stream; await cameraVideoRef.current.play().catch((e)=>console.warn("[camera] play error:", e)); }
       setIsCameraOn(true);
-    } catch (e) { console.error("[camera] Failed to start camera:", e); }
+    } catch (e) {
+      console.error("[camera] Failed to start camera:", e);
+      setIsCameraOn(false);
+    }
   }, [isCameraOn]);
 
-  const toggleMute = useCallback(() => setIsMuted(p=>!p), []);
+  const micPermRef = useRef<"granted" | "denied" | "unknown">("unknown");
+
+  const toggleMute = useCallback(async () => {
+    // If currently muted and permission was denied, re-request mic
+    if (isMuted && micPermRef.current === "denied") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+        micPermRef.current = "granted";
+        setIsMuted(false);
+      } catch {
+        // Permission still denied — stay muted
+        return;
+      }
+      return;
+    }
+    setIsMuted(p => !p);
+  }, [isMuted]);
 
   // ── Auto-start intro on mount or restart ──
   const introRanRef = useRef(false);
@@ -356,7 +376,7 @@ export default function Home() {
     setTimeout(async () => {
       try {
         const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself warmly as N22. You're a customer support assistant. Tell the user you're here to help. Mention they can share their screen or camera for visual guidance. Keep it to 2 sentences.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
+          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 2 sentences. Mention they can share their screen or camera for visual guidance.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
         const data = await res.json(); setThinking(false);
         if (data.speech) speak(data.speech);
       } catch { setThinking(false); }
@@ -422,6 +442,8 @@ export default function Home() {
     rec.onerror = (e: any) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         console.warn("[stt] Mic permission denied");
+        micPermRef.current = "denied";
+        setIsMuted(true);
         return;
       }
       // Restart on transient errors
@@ -437,9 +459,12 @@ export default function Home() {
       .then((stream) => {
         // Got permission — stop the stream (SpeechRecognition manages its own)
         stream.getTracks().forEach(t => t.stop());
+        micPermRef.current = "granted";
         if (!stopped) try { rec.start(); } catch {}
       })
       .catch(() => {
+        micPermRef.current = "denied";
+        setIsMuted(true);
         // Try starting anyway — Chrome doesn't need getUserMedia first
         if (!stopped) try { rec.start(); } catch {}
       });
@@ -467,31 +492,62 @@ export default function Home() {
       {phase === "ended" && (
         <div style={{
           position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center", gap: 16,
-          animation: "fade-in 0.5s ease both",
+          alignItems: "center", justifyContent: "center", gap: 0,
         }}>
+          {/* Ambient glow */}
           <div style={{
-            width: 48, height: 48, borderRadius: 12,
-            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+            position: "absolute", width: 280, height: 280, borderRadius: "50%",
+            background: "radial-gradient(circle, rgba(255,255,255,0.03) 0%, transparent 70%)",
+            animation: "ended-glow 4s ease-in-out infinite",
+            pointerEvents: "none",
+          }} />
+
+          {/* Icon */}
+          <div style={{
+            width: 56, height: 56, borderRadius: 16,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.05)",
             display: "flex", alignItems: "center", justifyContent: "center",
+            animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) both",
           }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2z"/>
             </svg>
           </div>
-          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", fontWeight: 400, letterSpacing: "-0.01em" }}>
+
+          {/* Text */}
+          <span style={{
+            marginTop: 16, fontSize: 13, color: "rgba(255,255,255,0.25)",
+            fontWeight: 400, letterSpacing: "0.04em", textTransform: "uppercase",
+            animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) 0.1s both",
+          }}>
             Session ended
           </span>
+
+          {/* Button */}
           <button
             onClick={() => { setPhase("active"); introRanRef.current = false; }}
             style={{
-              marginTop: 8, padding: "8px 20px", borderRadius: 8,
+              marginTop: 24, padding: "10px 28px", borderRadius: 10,
               background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)",
-              color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: 500,
-              cursor: "pointer", transition: "all 0.15s", fontFamily: "inherit",
+              color: "rgba(255,255,255,0.5)", fontSize: 12.5, fontWeight: 500,
+              cursor: "pointer", transition: "all 0.2s cubic-bezier(.22,1,.36,1)",
+              fontFamily: "inherit", letterSpacing: "0.01em",
+              animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) 0.2s both",
+              backdropFilter: "blur(12px)",
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.12)";
+              e.currentTarget.style.color = "rgba(255,255,255,0.8)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)";
+              e.currentTarget.style.transform = "translateY(-1px)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+              e.currentTarget.style.color = "rgba(255,255,255,0.5)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
+              e.currentTarget.style.transform = "translateY(0)";
+            }}
           >
             Start new session
           </button>
