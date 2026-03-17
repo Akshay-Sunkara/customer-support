@@ -577,7 +577,8 @@ export default function Home() {
             position: "absolute", bottom: 20, left: "50%",
             transform: `translateX(-50%) translateY(${showControls && phase !== "ending" ? 0 : 20}px)`,
             zIndex: 30, transition: "all 0.5s cubic-bezier(.22,1,.36,1)",
-            opacity: showControls && phase !== "ending" ? 1 : 0,
+            opacity: (showControls && phase !== "ending") ? (isEmbed && chatOpen ? 0 : 1) : 0,
+            pointerEvents: (isEmbed && chatOpen) ? "none" as const : "auto" as const,
           }}>
             <div style={{
               display: "flex", alignItems: "center", gap: 2,
