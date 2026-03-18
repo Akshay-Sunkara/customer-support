@@ -347,18 +347,17 @@ export default function Home() {
     }
   }, [isCameraOn]);
 
-  const micPermRef = useRef<"granted" | "denied" | "unknown">("unknown");
+  const micDeniedRef = useRef(false);
 
   const toggleMute = useCallback(async () => {
-    // If currently muted and permission was denied, re-request mic
-    if (isMuted && micPermRef.current === "denied") {
+    // If mic was explicitly denied by the browser, re-request permission on unmute
+    if (isMuted && micDeniedRef.current) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(t => t.stop());
-        micPermRef.current = "granted";
+        micDeniedRef.current = false;
         setIsMuted(false);
       } catch {
-        // Permission still denied — stay muted
         return;
       }
       return;
@@ -442,7 +441,7 @@ export default function Home() {
     rec.onerror = (e: any) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         console.warn("[stt] Mic permission denied");
-        micPermRef.current = "denied";
+        micDeniedRef.current = true;
         setIsMuted(true);
         return;
       }
@@ -457,14 +456,15 @@ export default function Home() {
     // Request mic permission first (Safari needs this before SpeechRecognition works)
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then((stream) => {
-        // Got permission — stop the stream (SpeechRecognition manages its own)
         stream.getTracks().forEach(t => t.stop());
-        micPermRef.current = "granted";
+        micDeniedRef.current = false;
         if (!stopped) try { rec.start(); } catch {}
       })
-      .catch(() => {
-        micPermRef.current = "denied";
-        setIsMuted(true);
+      .catch((err) => {
+        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+          micDeniedRef.current = true;
+          setIsMuted(true);
+        }
         // Try starting anyway — Chrome doesn't need getUserMedia first
         if (!stopped) try { rec.start(); } catch {}
       });
