@@ -174,6 +174,31 @@ export default function Home() {
     return () => { cancelAnimationFrame(animFrameRef.current); window.removeEventListener("resize", resize); };
   }, [phase]);
 
+  // ── Unlock AudioContext on first user gesture (Chrome autoplay policy) ──
+  useEffect(() => {
+    const unlock = () => {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContext();
+        analyserRef.current = audioCtxRef.current.createAnalyser();
+        analyserRef.current.fftSize = 128;
+        analyserRef.current.smoothingTimeConstant = 0.75;
+        analyserRef.current.connect(audioCtxRef.current.destination);
+      }
+      if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+    document.addEventListener("click", unlock);
+    document.addEventListener("touchstart", unlock);
+    document.addEventListener("keydown", unlock);
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
   // ── Cartesia TTS with AudioContext ──
   const speak = useCallback(async (text: string) => {
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
@@ -196,16 +221,35 @@ export default function Home() {
         analyserRef.current.smoothingTimeConstant = 0.75;
         analyserRef.current.connect(audioCtxRef.current.destination);
       }
-      if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
+      if (audioCtxRef.current.state === "suspended") {
+        try { await audioCtxRef.current.resume(); } catch {}
+      }
 
       const audio = new Audio(url);
       currentAudioRef.current = audio;
-      const source = audioCtxRef.current.createMediaElementSource(audio);
-      source.connect(analyserRef.current!);
+
+      // Connect to analyser only if AudioContext is running
+      if (audioCtxRef.current.state === "running") {
+        const source = audioCtxRef.current.createMediaElementSource(audio);
+        source.connect(analyserRef.current!);
+      }
 
       audio.onended = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
       audio.onerror = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
-      await audio.play();
+
+      try {
+        await audio.play();
+      } catch {
+        // Autoplay blocked — wait for user gesture then retry
+        const retryPlay = async () => {
+          if (audioCtxRef.current?.state === "suspended") await audioCtxRef.current.resume().catch(() => {});
+          audio.play().catch(() => {});
+          document.removeEventListener("click", retryPlay);
+          document.removeEventListener("touchstart", retryPlay);
+        };
+        document.addEventListener("click", retryPlay, { once: true });
+        document.addEventListener("touchstart", retryPlay, { once: true });
+      }
     } catch (e) {
       console.error("[tts]", e);
       speakingRef.current = false;
