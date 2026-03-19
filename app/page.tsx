@@ -289,28 +289,24 @@ export default function Home() {
     return canvas.toDataURL("image/jpeg", 0.6).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
-  // ── PiP annotation rendering ──
-  const renderAnnotationToPiP = useCallback(async (screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
+  // ── Cross-tab annotation notification ──
+  const notifyAnnotation = useCallback(async (screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
+    // Render annotated image to canvas for notification
     const pipCanvas = pipCanvasRef.current;
-    const pipVideo = pipVideoRef.current;
-    if (!pipCanvas || !pipVideo) return;
-
-    // Check if PiP is supported
-    if (!document.pictureInPictureEnabled) return;
+    if (!pipCanvas) return;
 
     const img = new Image();
     img.src = `data:image/jpeg;base64,${screenshot}`;
     await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve(); });
 
     const W = 400;
-    const H = Math.round((img.height / img.width) * W) + 40; // extra space for label
+    const H = Math.round((img.height / img.width) * W) + 40;
     pipCanvas.width = W;
     pipCanvas.height = H;
 
     const ctx = pipCanvas.getContext("2d");
     if (!ctx) return;
 
-    // Draw screenshot
     const imgH = H - 40;
     ctx.fillStyle = "#0A0A0A";
     ctx.fillRect(0, 0, W, H);
@@ -318,12 +314,10 @@ export default function Home() {
     ctx.drawImage(img, 0, 0, W, imgH);
     ctx.filter = "none";
 
-    // Draw pointer/crosshair
     const px = cx * W;
     const py = cy * imgH;
 
     if (isCamera) {
-      // Crosshair ring
       ctx.strokeStyle = "rgba(255,255,255,0.8)";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -334,17 +328,14 @@ export default function Home() {
       ctx.arc(px, py, 2.5, 0, Math.PI * 2);
       ctx.fill();
     } else {
-      // Ripple rings
       for (let r = 0; r < 3; r++) {
         const radius = 14 + r * 10;
-        const alpha = 0.3 - r * 0.08;
-        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+        ctx.strokeStyle = `rgba(255,255,255,${0.3 - r * 0.08})`;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(px, py, radius, 0, Math.PI * 2);
         ctx.stroke();
       }
-      // Cursor arrow
       ctx.fillStyle = "white";
       ctx.strokeStyle = "rgba(0,0,0,0.4)";
       ctx.lineWidth = 1;
@@ -360,30 +351,25 @@ export default function Home() {
       ctx.stroke();
     }
 
-    // Label bar at bottom
     ctx.fillStyle = "rgba(12,12,12,0.95)";
     ctx.fillRect(0, imgH, W, 40);
     ctx.fillStyle = "rgba(255,255,255,0.6)";
     ctx.font = "500 13px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.fillText(label.length > 50 ? label.slice(0, 47) + "..." : label, 12, imgH + 25);
 
-    // Start PiP if not already active
-    if (!pipActiveRef.current) {
-      // Set up video stream from canvas
-      const stream = pipCanvas.captureStream(1);
-      pipVideo.srcObject = stream;
+    // Send as browser notification (works cross-tab, no gesture required)
+    if (Notification.permission === "granted") {
       try {
-        await pipVideo.play();
-        await pipVideo.requestPictureInPicture();
-        pipActiveRef.current = true;
-
-        pipVideo.addEventListener("leavepictureinpicture", () => {
-          pipActiveRef.current = false;
-          pipVideo.srcObject = null;
-        }, { once: true });
-      } catch (e) {
-        console.warn("[pip] Failed to enter PiP:", e);
-      }
+        const blob = await new Promise<Blob | null>((resolve) => pipCanvas.toBlob(resolve, "image/png"));
+        if (blob) {
+          const iconUrl = URL.createObjectURL(blob);
+          const n = new Notification("N22", { body: label, icon: iconUrl, silent: true });
+          n.onclick = () => { window.focus(); n.close(); };
+          setTimeout(() => { n.close(); URL.revokeObjectURL(iconUrl); }, 15000);
+        }
+      } catch (e) { console.warn("[notification]", e); }
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission();
     }
   }, []);
 
@@ -406,11 +392,11 @@ export default function Home() {
       }
       return copy;
     });
-    // Push to PiP if tab is not visible
+    // Notify if tab is not visible
     if (document.hidden) {
-      renderAnnotationToPiP(screenshot, cx, cy, label, isCamera);
+      notifyAnnotation(screenshot, cx, cy, label, isCamera);
     }
-  }, [renderAnnotationToPiP]);
+  }, [notifyAnnotation]);
 
   // ── Claude ──
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null, camOverride?: string|null) => {
@@ -488,6 +474,8 @@ export default function Home() {
       }
       stream.getVideoTracks()[0].onended = () => { screenStreamRef.current=null; setIsSharing(false); };
       setIsSharing(true);
+      // Pre-request notification permission for cross-tab annotations
+      if (Notification.permission === "default") Notification.requestPermission();
     } catch {}
   }, [isSharing]);
 
@@ -511,8 +499,6 @@ export default function Home() {
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
   const pipCanvasRef = useRef<HTMLCanvasElement>(null);
-  const pipVideoRef = useRef<HTMLVideoElement>(null);
-  const pipActiveRef = useRef(false);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
@@ -661,26 +647,11 @@ export default function Home() {
     };
   }, [phase]);
 
-  // ── Close PiP when user returns to tab ──
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (!document.hidden && pipActiveRef.current && document.pictureInPictureElement) {
-        document.exitPictureInPicture().catch(() => {});
-        pipActiveRef.current = false;
-        if (pipVideoRef.current) pipVideoRef.current.srcObject = null;
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, []);
-
   useEffect(() => () => {
     if (currentAudioRef.current) currentAudioRef.current.pause();
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     cancelAnimationFrame(animFrameRef.current);
-    // Clean up PiP on unmount
-    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
   }, []);
 
   // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
@@ -918,7 +889,6 @@ export default function Home() {
 
       <canvas ref={canvasRef} style={{ display: "none" }} />
       <canvas ref={pipCanvasRef} style={{ display: "none" }} />
-      <video ref={pipVideoRef} playsInline muted style={{ display: "none" }} />
     </div>
   );
 }
