@@ -261,19 +261,10 @@ export default function Home() {
   const captureFrame = useCallback((): string | null => {
     if (!sharingRef.current) return null;
     const video = screenVideoRef.current; const canvas = canvasRef.current;
-    if (!video || !canvas) return null;
-    console.log("[capture] videoWidth:", video.videoWidth, "videoHeight:", video.videoHeight, "readyState:", video.readyState, "paused:", video.paused, "srcObject:", !!video.srcObject);
-    if (!video.videoWidth) return null;
+    if (!video || !canvas || !video.videoWidth) return null;
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d"); if (!ctx) return null;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true }); if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
-    // Check if frame is actually black
-    const sample = ctx.getImageData(0, 0, Math.min(100, canvas.width), Math.min(100, canvas.height));
-    let nonBlack = 0;
-    for (let i = 0; i < sample.data.length; i += 4) {
-      if (sample.data[i] > 5 || sample.data[i+1] > 5 || sample.data[i+2] > 5) { nonBlack++; break; }
-    }
-    console.log("[capture] frame is", nonBlack > 0 ? "NOT black" : "BLACK", "— size:", canvas.width, "x", canvas.height);
     return canvas.toDataURL("image/jpeg", 0.5).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
@@ -358,18 +349,23 @@ export default function Home() {
     ctx.fillText(label.length > 50 ? label.slice(0, 47) + "..." : label, 12, imgH + 25);
 
     // Send as browser notification (works cross-tab, no gesture required)
-    if (Notification.permission === "granted") {
+    const perm = Notification.permission;
+    console.log("[notification] permission:", perm, "label:", label);
+    if (perm === "granted") {
       try {
-        const blob = await new Promise<Blob | null>((resolve) => pipCanvas.toBlob(resolve, "image/png"));
-        if (blob) {
-          const iconUrl = URL.createObjectURL(blob);
-          const n = new Notification("N22", { body: label, icon: iconUrl, silent: true });
-          n.onclick = () => { window.focus(); n.close(); };
-          setTimeout(() => { n.close(); URL.revokeObjectURL(iconUrl); }, 15000);
-        }
-      } catch (e) { console.warn("[notification]", e); }
-    } else if (Notification.permission === "default") {
-      Notification.requestPermission();
+        const dataUrl = pipCanvas.toDataURL("image/png");
+        const n = new Notification("N22", {
+          body: label,
+          icon: "/favicon.ico",
+          image: dataUrl,
+          silent: true,
+          tag: "n22-annotation",
+        } as NotificationOptions);
+        n.onclick = () => { window.focus(); n.close(); };
+        setTimeout(() => n.close(), 15000);
+      } catch (e) { console.warn("[notification] error:", e); }
+    } else if (perm === "default") {
+      Notification.requestPermission().then((p) => console.log("[notification] permission result:", p));
     }
   }, []);
 
