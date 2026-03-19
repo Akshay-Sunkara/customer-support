@@ -421,9 +421,12 @@ export default function Home() {
       const res = await fetch("/api/grounding", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ screenshot: frame, query, imgW, imgH, isCamera }), signal: AbortSignal.timeout(14000) });
       const data = await res.json();
+      console.log("[grounding] response:", JSON.stringify(data));
       if (data.cx != null) {
         const l = label || data.label || query;
         showAnnotation(frame, data.cx, data.cy, l, isCamera);
+      } else {
+        console.warn("[grounding] No coordinates returned — element not found");
       }
     } catch (e) { console.warn("[highlight]", e); }
   }, [showAnnotation]);
