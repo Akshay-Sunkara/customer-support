@@ -473,7 +473,10 @@ export default function Home() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       screenStreamRef.current = stream;
-      if (screenVideoRef.current) screenVideoRef.current.srcObject = stream;
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+        await screenVideoRef.current.play().catch((e) => console.warn("[screen] play error:", e));
+      }
       stream.getVideoTracks()[0].onended = () => { screenStreamRef.current=null; setIsSharing(false); };
       setIsSharing(true);
     } catch {}
@@ -745,7 +748,7 @@ export default function Home() {
       {/* ── Active / Ending ── */}
       {(phase === "active" || phase === "ending") && (
         <>
-          <video ref={screenVideoRef} autoPlay playsInline muted style={{ display: "none" }} />
+          <video ref={screenVideoRef} autoPlay playsInline muted style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none", overflow: "hidden" }} />
 
           {/* ── Main waveform area ── */}
           <div className="animate-fade-in" style={{
