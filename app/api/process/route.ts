@@ -39,7 +39,8 @@ export async function POST(req: Request) {
   // Build content — minimal context
   const context: string[] = [];
   if (!hasScreen && !hasCamera) context.push("[No screen or camera shared]");
-  if (hasScreen && hasCamera) context.push("[Screen + camera shared — image 1 is screen, image 2 is camera]");
+  else if (hasScreen && hasCamera) context.push("[Screen + camera shared — image 1 is screen, image 2 is camera]");
+  else if (hasScreen) context.push("[Screen shared — the attached image is the user's screen]");
   else if (hasCamera) context.push("[Camera shared]");
 
   if (dialogue?.length > 0) {
