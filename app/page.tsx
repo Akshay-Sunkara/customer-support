@@ -356,7 +356,7 @@ export default function Home() {
     ctx.fillText(label.length > 50 ? label.slice(0, 47) + "..." : label, 12, imgH + 25);
 
     // Send via Service Worker notification (always shows, even when browser is focused)
-    if (Notification.permission === "granted" && navigator.serviceWorker?.controller) {
+    if (Notification.permission === "granted" && "serviceWorker" in navigator) {
       try {
         const reg = await navigator.serviceWorker.ready;
         const dataUrl = pipCanvas.toDataURL("image/png");
