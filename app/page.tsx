@@ -392,16 +392,23 @@ export default function Home() {
   }, [isCameraOn]);
 
   const micDeniedRef = useRef(false);
+  const restartRecRef = useRef<(() => void) | null>(null);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
+    // Safari requires getUserMedia to be called directly from a user gesture (click/tap)
     if (isMuted && micDeniedRef.current) {
       try {
+        // This MUST be called synchronously from the click handler for Safari
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(t => t.stop());
         micDeniedRef.current = false;
         setIsMuted(false);
+        // Restart speech recognition now that we have permission
+        restartRecRef.current?.();
       } catch {
+        // Safari: if user denied again, try opening settings hint
+        // Permission is still denied — stay muted
         return;
       }
       return;
@@ -497,24 +504,38 @@ export default function Home() {
       }
     };
 
-    // Request mic permission first (Safari needs this before SpeechRecognition works)
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then((stream) => {
-        stream.getTracks().forEach(t => t.stop());
-        micDeniedRef.current = false;
-        if (!stopped) try { rec.start(); } catch {}
-      })
-      .catch((err) => {
-        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+    // Expose restart function so toggleMute can restart recognition after permission grant
+    restartRecRef.current = () => {
+      if (!stopped) try { rec.start(); } catch {}
+    };
+
+    // Check mic permission without triggering a prompt (Safari blocks non-gesture getUserMedia)
+    const startRec = () => {
+      if (!stopped) try { rec.start(); } catch {}
+    };
+
+    if (navigator.permissions?.query) {
+      // Modern API: check permission state without prompting
+      navigator.permissions.query({ name: "microphone" as PermissionName }).then((status) => {
+        if (status.state === "denied") {
           micDeniedRef.current = true;
           setIsMuted(true);
         }
-        // Try starting anyway — Chrome doesn't need getUserMedia first
-        if (!stopped) try { rec.start(); } catch {}
+        // Start recognition regardless — Chrome handles its own prompting
+        startRec();
+      }).catch(() => {
+        // permissions.query not supported for mic (Safari) — just try starting
+        startRec();
       });
+    } else {
+      // Safari doesn't support permissions.query — try starting directly
+      // SpeechRecognition will handle its own permission prompt on Safari
+      startRec();
+    }
 
     return () => {
       stopped = true;
+      restartRecRef.current = null;
       if (restartTimeout) clearTimeout(restartTimeout);
       try { rec.stop(); } catch {}
     };
