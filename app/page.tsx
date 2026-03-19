@@ -451,6 +451,7 @@ export default function Home() {
 
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
+  const stopRecRef = useRef<(() => void) | null>(null);
   const speakingCooldownRef = useRef(false);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   // MediaRecorder fallback refs (for iOS Safari which lacks SpeechRecognition)
@@ -490,6 +491,28 @@ export default function Home() {
     }
     setIsMuted(p => !p);
   }, [isMuted]);
+
+  // ── Stop/pause mic input while agent speaks (bulletproof echo prevention) ──
+  useEffect(() => {
+    if (speaking) {
+      // Agent started speaking — STOP all mic input
+      stopRecRef.current?.();
+      if (mediaRecorderRef.current?.state === "recording") {
+        try { mediaRecorderRef.current.pause(); } catch {}
+      }
+      audioChunksRef.current = []; // discard any partial audio
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    } else {
+      // Agent stopped speaking — restart mic after cooldown (1s) + buffer
+      const timer = setTimeout(() => {
+        restartRecRef.current?.();
+        if (mediaRecorderRef.current?.state === "paused") {
+          try { mediaRecorderRef.current.resume(); } catch {}
+        }
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [speaking]);
 
   // ── Auto-start intro on mount or restart ──
   const introRanRef = useRef(false);
@@ -542,12 +565,6 @@ export default function Home() {
 
     // ── Branch A: SpeechRecognition available (Chrome, desktop Safari, Android Chrome) ──
     if (SR) {
-      let retryCount = 0;
-      let retryDelay = 500;
-      let gotResult = false;
-      const MAX_RETRIES = 5;
-      const MAX_DELAY = 5000;
-
       const rec = new SR();
       rec.lang = "en-US";
       rec.interimResults = false;
@@ -555,9 +572,6 @@ export default function Home() {
       rec.maxAlternatives = 1;
 
       rec.onresult = (e: any) => {
-        gotResult = true;
-        retryCount = 0;
-        retryDelay = 500;
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (!e.results[i].isFinal) continue;
           const t = e.results[i][0].transcript.trim();
@@ -567,24 +581,11 @@ export default function Home() {
       };
 
       rec.onend = () => {
-        if (stopped) return;
-        if (gotResult) {
-          // Normal end after successful recognition — restart quickly
-          gotResult = false;
-          restartTimeout = setTimeout(() => {
-            if (!stopped) try { rec.start(); } catch {}
-          }, 500);
-        } else {
-          // Ended without result — backoff
-          retryCount++;
-          if (retryCount >= MAX_RETRIES) {
-            console.warn("[stt] Max empty restarts reached, pausing recognition");
-            return;
-          }
-          restartTimeout = setTimeout(() => {
-            if (!stopped) try { rec.start(); } catch {}
-          }, retryDelay);
-        }
+        // Don't restart if stopped, muted, or agent is speaking (speaking-watcher handles restart)
+        if (stopped || speakingRef.current || speakingCooldownRef.current) return;
+        restartTimeout = setTimeout(() => {
+          if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
+        }, 500);
       };
 
       rec.onerror = (e: any) => {
@@ -593,22 +594,19 @@ export default function Home() {
           setIsMuted(true);
           return;
         }
-        if (stopped) return;
-        retryCount++;
-        if (retryCount >= MAX_RETRIES) {
-          console.warn("[stt] Max error retries reached, stopping. Last error:", e.error);
-          return;
-        }
-        retryDelay = Math.min(retryDelay * 2, MAX_DELAY);
+        if (stopped || speakingRef.current) return;
         restartTimeout = setTimeout(() => {
-          if (!stopped) try { rec.start(); } catch {}
-        }, retryDelay);
+          if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
+        }, 800);
       };
 
+      // Expose start/stop so the speaking-watcher effect can control recognition
       restartRecRef.current = () => {
-        retryCount = 0;
-        retryDelay = 500;
-        if (!stopped) try { rec.start(); } catch {}
+        if (!stopped && !isMutedRef.current) try { rec.start(); } catch {}
+      };
+      stopRecRef.current = () => {
+        try { rec.stop(); } catch {}
+        if (restartTimeout) { clearTimeout(restartTimeout); restartTimeout = null; }
       };
 
       // Start — mobile Android needs getUserMedia first
@@ -624,6 +622,7 @@ export default function Home() {
       return () => {
         stopped = true;
         restartRecRef.current = null;
+        stopRecRef.current = null;
         if (restartTimeout) clearTimeout(restartTimeout);
         try { rec.stop(); } catch {}
       };
