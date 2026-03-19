@@ -261,10 +261,19 @@ export default function Home() {
   const captureFrame = useCallback((): string | null => {
     if (!sharingRef.current) return null;
     const video = screenVideoRef.current; const canvas = canvasRef.current;
-    if (!video || !canvas || !video.videoWidth) return null;
+    if (!video || !canvas) return null;
+    console.log("[capture] videoWidth:", video.videoWidth, "videoHeight:", video.videoHeight, "readyState:", video.readyState, "paused:", video.paused, "srcObject:", !!video.srcObject);
+    if (!video.videoWidth) return null;
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d"); if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
+    // Check if frame is actually black
+    const sample = ctx.getImageData(0, 0, Math.min(100, canvas.width), Math.min(100, canvas.height));
+    let nonBlack = 0;
+    for (let i = 0; i < sample.data.length; i += 4) {
+      if (sample.data[i] > 5 || sample.data[i+1] > 5 || sample.data[i+2] > 5) { nonBlack++; break; }
+    }
+    console.log("[capture] frame is", nonBlack > 0 ? "NOT black" : "BLACK", "— size:", canvas.width, "x", canvas.height);
     return canvas.toDataURL("image/jpeg", 0.5).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
