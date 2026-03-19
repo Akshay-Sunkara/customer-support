@@ -145,9 +145,17 @@ export default function Home() {
 
       const analyser = analyserRef.current;
 
-      // Get frequency data or generate ambient
+      // Get frequency data, simulate for mobile, or generate ambient
+      let hasAnalyserData = false;
       if (isSpeaking && analyser) {
         analyser.getByteFrequencyData(freqData);
+        hasAnalyserData = freqData.some(v => v > 0);
+      }
+      // Simulate speaking bars on mobile (no analyser connected)
+      if (isSpeaking && !hasAnalyserData) {
+        for (let j = 0; j < BAR_COUNT; j++) {
+          freqData[j] = Math.floor(50 + Math.sin(now / 180 + j * 0.5) * 35 + Math.random() * 25);
+        }
       }
 
       const totalW = BAR_COUNT * (BAR_W + BAR_GAP) - BAR_GAP;
@@ -156,7 +164,7 @@ export default function Home() {
 
       for (let i = 0; i < BAR_COUNT; i++) {
         let target: number;
-        if (isSpeaking && analyser) {
+        if (isSpeaking) {
           target = (freqData[i] / 255) * MAX_BAR_H;
         } else {
           const t = now / 1400;
@@ -251,10 +259,23 @@ export default function Home() {
       const audio = new Audio(url);
       currentAudioRef.current = audio;
 
-      // Connect to analyser only if AudioContext is running
-      if (audioCtxRef.current.state === "running") {
-        const source = audioCtxRef.current.createMediaElementSource(audio);
-        source.connect(analyserRef.current!);
+      // On mobile, skip createMediaElementSource — it hijacks audio routing through
+      // AudioContext which is often suspended on mobile, producing silence.
+      // On desktop, connect to analyser for real waveform visualization.
+      const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (!isMobileBrowser && audioCtxRef.current.state === "running") {
+        // Disconnect previous source node
+        if (sourceNodeRef.current) {
+          try { sourceNodeRef.current.disconnect(); } catch {}
+          sourceNodeRef.current = null;
+        }
+        try {
+          const source = audioCtxRef.current.createMediaElementSource(audio);
+          source.connect(analyserRef.current!);
+          sourceNodeRef.current = source;
+        } catch {
+          // If connection fails, audio still plays directly
+        }
       }
 
       const onDone = () => {
@@ -431,25 +452,41 @@ export default function Home() {
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
   const speakingCooldownRef = useRef(false);
+  const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  // MediaRecorder fallback refs (for iOS Safari which lacks SpeechRecognition)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vadAnalyserRef = useRef<AnalyserNode | null>(null);
+  const vadIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const usingFallbackSTTRef = useRef(false);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
-    // Safari requires getUserMedia to be called directly from a user gesture (click/tap)
     if (isMuted && micDeniedRef.current) {
       try {
-        // This MUST be called synchronously from the click handler for Safari
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(t => t.stop());
         micDeniedRef.current = false;
         setIsMuted(false);
-        // Restart speech recognition now that we have permission
         restartRecRef.current?.();
       } catch {
-        // Safari: if user denied again, try opening settings hint
-        // Permission is still denied — stay muted
-        return;
+        return; // still denied
       }
       return;
+    }
+    // For MediaRecorder fallback: pause/resume recording
+    if (usingFallbackSTTRef.current) {
+      const rec = mediaRecorderRef.current;
+      if (isMuted) {
+        // Unmuting — restart recording
+        if (rec && rec.state === "inactive") try { rec.start(250); } catch {}
+      } else {
+        // Muting — stop recording
+        if (rec && rec.state === "recording") try { rec.stop(); } catch {}
+        audioChunksRef.current = []; // discard partial audio
+      }
     }
     setIsMuted(p => !p);
   }, [isMuted]);
@@ -477,6 +514,8 @@ export default function Home() {
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
+    mediaStreamRef.current?.getTracks().forEach(t=>t.stop());
+    if (mediaRecorderRef.current?.state === "recording") try { mediaRecorderRef.current.stop(); } catch {}
     dialogueRef.current=[]; stepHistoryRef.current=[];
     speakingRef.current=false; processingRef.current=false;
     setChatOpen(false); setSpeaking(false); setThinking(false);
@@ -493,105 +532,229 @@ export default function Home() {
     }, 1200);
   }, [phase]);
 
-  // ── Speech recognition (native browser API — works on Safari + Chrome) ──
+  // ── Speech-to-text: SpeechRecognition (desktop/Android) or MediaRecorder fallback (iOS) ──
   useEffect(() => {
     if (phase !== "active") return;
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { console.warn("[stt] SpeechRecognition not supported"); return; }
 
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
-    const rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = false;
-    // Safari doesn't handle continuous well — use short sessions and restart
-    rec.continuous = false;
-    rec.maxAlternatives = 1;
+    // ── Branch A: SpeechRecognition available (Chrome, desktop Safari, Android Chrome) ──
+    if (SR) {
+      let retryCount = 0;
+      let retryDelay = 500;
+      let gotResult = false;
+      const MAX_RETRIES = 5;
+      const MAX_DELAY = 5000;
 
-    rec.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (!e.results[i].isFinal) continue;
-        const t = e.results[i][0].transcript.trim();
-        if (!t || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) continue;
-        handleUserMessageRef.current(t, "voice");
-      }
-    };
+      const rec = new SR();
+      rec.lang = "en-US";
+      rec.interimResults = false;
+      rec.continuous = false;
+      rec.maxAlternatives = 1;
 
-    rec.onend = () => {
-      // Restart after each utterance (Safari ends after each phrase)
-      // Use 500ms delay to avoid aggressive restarts that cause mobile overheating
-      if (!stopped) {
+      rec.onresult = (e: any) => {
+        gotResult = true;
+        retryCount = 0;
+        retryDelay = 500;
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (!e.results[i].isFinal) continue;
+          const t = e.results[i][0].transcript.trim();
+          if (!t || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) continue;
+          handleUserMessageRef.current(t, "voice");
+        }
+      };
+
+      rec.onend = () => {
+        if (stopped) return;
+        if (gotResult) {
+          // Normal end after successful recognition — restart quickly
+          gotResult = false;
+          restartTimeout = setTimeout(() => {
+            if (!stopped) try { rec.start(); } catch {}
+          }, 500);
+        } else {
+          // Ended without result — backoff
+          retryCount++;
+          if (retryCount >= MAX_RETRIES) {
+            console.warn("[stt] Max empty restarts reached, pausing recognition");
+            return;
+          }
+          restartTimeout = setTimeout(() => {
+            if (!stopped) try { rec.start(); } catch {}
+          }, retryDelay);
+        }
+      };
+
+      rec.onerror = (e: any) => {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          micDeniedRef.current = true;
+          setIsMuted(true);
+          return;
+        }
+        if (stopped) return;
+        retryCount++;
+        if (retryCount >= MAX_RETRIES) {
+          console.warn("[stt] Max error retries reached, stopping. Last error:", e.error);
+          return;
+        }
+        retryDelay = Math.min(retryDelay * 2, MAX_DELAY);
         restartTimeout = setTimeout(() => {
           if (!stopped) try { rec.start(); } catch {}
-        }, 500);
-      }
-    };
+        }, retryDelay);
+      };
 
-    rec.onerror = (e: any) => {
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        console.warn("[stt] Mic permission denied");
-        micDeniedRef.current = true;
-        setIsMuted(true);
-        return;
-      }
-      // Restart on transient errors — use longer delay to avoid hot loops on mobile
-      if (!stopped) {
-        restartTimeout = setTimeout(() => {
-          if (!stopped) try { rec.start(); } catch {}
-        }, 800);
-      }
-    };
+      restartRecRef.current = () => {
+        retryCount = 0;
+        retryDelay = 500;
+        if (!stopped) try { rec.start(); } catch {}
+      };
 
-    // Expose restart function so toggleMute can restart recognition after permission grant
-    restartRecRef.current = () => {
-      if (!stopped) try { rec.start(); } catch {}
-    };
-
-    const startRec = () => {
-      if (!stopped) try { rec.start(); } catch {}
-    };
-
-    // On mobile, getUserMedia must be called first so the browser grants mic access
-    // before SpeechRecognition tries to use it. On desktop, SpeechRecognition prompts itself.
-    const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-    if (isMobileBrowser) {
-      // Mobile: request mic permission explicitly, then start recognition
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((stream) => {
-          stream.getTracks().forEach(t => t.stop()); // release immediately
-          micDeniedRef.current = false;
-          startRec();
-        })
-        .catch((err) => {
-          if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
-            micDeniedRef.current = true;
-            setIsMuted(true);
-          }
-          // Try starting anyway in case it works
-          startRec();
-        });
-    } else {
-      // Desktop: just start — Chrome prompts via SpeechRecognition, Safari uses permissions.query
-      if (navigator.permissions?.query) {
-        navigator.permissions.query({ name: "microphone" as PermissionName }).then((status) => {
-          if (status.state === "denied") {
-            micDeniedRef.current = true;
-            setIsMuted(true);
-          }
-          startRec();
-        }).catch(() => startRec());
+      // Start — mobile Android needs getUserMedia first
+      const isMobileAndroid = /Android/i.test(navigator.userAgent);
+      if (isMobileAndroid) {
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then((s) => { s.getTracks().forEach(t => t.stop()); micDeniedRef.current = false; if (!stopped) try { rec.start(); } catch {} })
+          .catch(() => { if (!stopped) try { rec.start(); } catch {} });
       } else {
-        startRec();
+        if (!stopped) try { rec.start(); } catch {}
       }
+
+      return () => {
+        stopped = true;
+        restartRecRef.current = null;
+        if (restartTimeout) clearTimeout(restartTimeout);
+        try { rec.stop(); } catch {}
+      };
     }
+
+    // ── Branch B: No SpeechRecognition (iOS Safari) — use MediaRecorder + /api/stt ──
+    console.log("[stt] SpeechRecognition not available, using MediaRecorder + Whisper fallback");
+    usingFallbackSTTRef.current = true;
+
+    const sendToSTT = async (chunks: Blob[], mimeType: string) => {
+      if (chunks.length === 0) return;
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size < 2000) return; // skip tiny recordings
+      try {
+        const res = await fetch("/api/stt", {
+          method: "POST",
+          headers: { "Content-Type": mimeType },
+          body: await blob.arrayBuffer(),
+        });
+        const data = await res.json();
+        const transcript = data.transcript?.trim();
+        if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
+          handleUserMessageRef.current(transcript, "voice");
+        }
+      } catch (e) { console.error("[stt-fallback]", e); }
+    };
+
+    let micStream: MediaStream | null = null;
+    let recorder: MediaRecorder | null = null;
+    let vadCtx: AudioContext | null = null;
+
+    const startFallback = async () => {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = micStream;
+        micDeniedRef.current = false;
+
+        // VAD via AnalyserNode
+        vadCtx = new AudioContext();
+        const source = vadCtx.createMediaStreamSource(micStream);
+        const vadAnalyser = vadCtx.createAnalyser();
+        vadAnalyser.fftSize = 256;
+        source.connect(vadAnalyser);
+        vadAnalyserRef.current = vadAnalyser;
+
+        // Determine MIME type
+        const mimeType = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
+          : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+          : "audio/webm";
+
+        recorder = new MediaRecorder(micStream, { mimeType });
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        };
+
+        recorder.onstop = () => {
+          const chunks = [...audioChunksRef.current];
+          audioChunksRef.current = [];
+          // Don't send if agent was speaking (echo prevention)
+          if (!speakingRef.current && !speakingCooldownRef.current) {
+            sendToSTT(chunks, mimeType);
+          }
+          // Restart recording after a brief pause
+          if (!stopped && !isMutedRef.current && recorder?.state !== "recording") {
+            setTimeout(() => {
+              if (!stopped && !isMutedRef.current && recorder && recorder.state === "inactive") {
+                try { recorder.start(250); } catch {}
+              }
+            }, 300);
+          }
+        };
+
+        // Start recording
+        recorder.start(250);
+
+        // VAD: detect silence and stop recorder to trigger transcription
+        const vadData = new Uint8Array(vadAnalyser.frequencyBinCount);
+        vadIntervalRef.current = setInterval(() => {
+          if (speakingRef.current || speakingCooldownRef.current || isMutedRef.current) {
+            // While agent speaks, clear silence timer and don't process
+            if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+            return;
+          }
+          vadAnalyser.getByteFrequencyData(vadData);
+          const avg = vadData.reduce((sum, v) => sum + v, 0) / vadData.length;
+
+          if (avg > 12) {
+            // Voice detected — clear silence timer
+            if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+          } else if (!silenceTimerRef.current && recorder?.state === "recording" && audioChunksRef.current.length > 0) {
+            // Silence detected — wait 1.5s then stop to trigger transcription
+            silenceTimerRef.current = setTimeout(() => {
+              silenceTimerRef.current = null;
+              if (recorder?.state === "recording") {
+                try { recorder.stop(); } catch {}
+              }
+            }, 1500);
+          }
+        }, 200);
+
+      } catch (err: any) {
+        console.error("[stt-fallback] Failed to start:", err);
+        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+          micDeniedRef.current = true;
+          setIsMuted(true);
+        }
+      }
+    };
+
+    restartRecRef.current = () => {
+      if (recorder?.state === "inactive") {
+        try { recorder.start(250); } catch {}
+      }
+    };
+
+    startFallback();
 
     return () => {
       stopped = true;
       restartRecRef.current = null;
-      if (restartTimeout) clearTimeout(restartTimeout);
-      try { rec.stop(); } catch {}
+      usingFallbackSTTRef.current = false;
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+      if (recorder && recorder.state !== "inactive") try { recorder.stop(); } catch {}
+      mediaRecorderRef.current = null;
+      micStream?.getTracks().forEach(t => t.stop());
+      mediaStreamRef.current = null;
+      if (vadCtx) vadCtx.close().catch(() => {});
+      vadAnalyserRef.current = null;
     };
   }, [phase]);
 
