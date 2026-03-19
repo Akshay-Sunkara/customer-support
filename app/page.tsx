@@ -652,19 +652,6 @@ export default function Home() {
             )}
           </div>
 
-          {/* Screen share indicator */}
-          {isSharing && (
-            <div className="animate-fade-in" style={{
-              position: "absolute", top: 16, left: 16, zIndex: 20,
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "6px 12px", borderRadius: 8,
-              background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)",
-            }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ADE80" }} />
-              <span style={{ fontSize: 11, color: "rgba(74,222,128,0.8)", fontWeight: 500 }}>Screen sharing</span>
-            </div>
-          )}
-
           {/* ── Annotations (cursor + ripple overlay) ── */}
           <div style={{ position: "absolute", bottom: 80, left: 8, right: 8, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, pointerEvents: "none" }}>
             {annotations.map((ann) => (
@@ -702,8 +689,8 @@ export default function Home() {
             pointerEvents: (isEmbed && chatOpen) ? "none" as const : "auto" as const,
           }}>
             <div style={{
-              display: "flex", alignItems: "center", gap: 2,
-              padding: "6px 8px", borderRadius: 12,
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "8px 12px", borderRadius: 14,
               background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
               backdropFilter: "blur(32px)",
             }}>
@@ -723,7 +710,7 @@ export default function Home() {
               <Btn on={chatOpen} color="rgba(255,255,255,0.15)" click={() => setChatOpen(o=>{ if (!o) setAnnotations([]); return !o; })}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </Btn>
-              <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
+              <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 2px" }} />
               <button onClick={endSession} style={{
                 width: 38, height: 38, borderRadius: 10,
                 background: "rgba(239,68,68,0.6)", border: "none",
