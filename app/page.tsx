@@ -27,13 +27,6 @@ export default function Home() {
 
   useEffect(() => { try { setIsEmbed(window.self !== window.top); } catch { setIsEmbed(true); } }, []);
 
-  // Register service worker for cross-tab notifications
-  useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
-    }
-  }, []);
-
   const chatWidth = isEmbed ? 260 : 380;
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -287,93 +280,6 @@ export default function Home() {
     return canvas.toDataURL("image/jpeg", 0.6).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
-  // ── Cross-tab annotation notification ──
-  const notifyAnnotation = useCallback(async (screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
-    // Render annotated image to canvas for notification
-    const pipCanvas = pipCanvasRef.current;
-    if (!pipCanvas) return;
-
-    const img = new Image();
-    img.src = `data:image/jpeg;base64,${screenshot}`;
-    await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve(); });
-
-    const W = 400;
-    const H = Math.round((img.height / img.width) * W) + 40;
-    pipCanvas.width = W;
-    pipCanvas.height = H;
-
-    const ctx = pipCanvas.getContext("2d");
-    if (!ctx) return;
-
-    const imgH = H - 40;
-    ctx.fillStyle = "#0A0A0A";
-    ctx.fillRect(0, 0, W, H);
-    ctx.filter = "brightness(0.85)";
-    ctx.drawImage(img, 0, 0, W, imgH);
-    ctx.filter = "none";
-
-    const px = cx * W;
-    const py = cy * imgH;
-
-    if (isCamera) {
-      ctx.strokeStyle = "rgba(255,255,255,0.8)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(px, py, 10, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.beginPath();
-      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      for (let r = 0; r < 3; r++) {
-        const radius = 14 + r * 10;
-        ctx.strokeStyle = `rgba(255,255,255,${0.3 - r * 0.08})`;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(px, py, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "rgba(0,0,0,0.4)";
-      ctx.lineWidth = 1;
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      const s = 0.85;
-      ctx.moveTo(px, py);
-      ctx.lineTo(px + 14 * s, py + 9 * s);
-      ctx.lineTo(px + 7 * s, py + 10.5 * s);
-      ctx.lineTo(px + 3.5 * s, py + 18 * s);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = "rgba(12,12,12,0.95)";
-    ctx.fillRect(0, imgH, W, 40);
-    ctx.fillStyle = "rgba(255,255,255,0.6)";
-    ctx.font = "500 13px -apple-system, BlinkMacSystemFont, sans-serif";
-    ctx.fillText(label.length > 50 ? label.slice(0, 47) + "..." : label, 12, imgH + 25);
-
-    // Send via Service Worker notification (always shows, even when browser is focused)
-    if (Notification.permission === "granted" && "serviceWorker" in navigator) {
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        const dataUrl = pipCanvas.toDataURL("image/png");
-        await reg.showNotification("N22", {
-          body: label,
-          image: dataUrl,
-          icon: "/favicon.ico",
-          tag: "n22-annotation",
-          silent: true,
-          requireInteraction: true,
-        } as NotificationOptions & { image: string });
-      } catch (e) { console.warn("[notification] SW error:", e); }
-    } else if (Notification.permission === "default") {
-      Notification.requestPermission();
-    }
-  }, []);
-
   const showAnnotation = useCallback((screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
     const id = ++annotationIdRef.current;
     const ann = { screenshot, cx, cy, label, isCamera };
@@ -393,11 +299,12 @@ export default function Home() {
       }
       return copy;
     });
-    // Notify if tab is not visible
-    if (document.hidden) {
-      notifyAnnotation(screenshot, cx, cy, label, isCamera);
+    // Send to overlay popup (visible across tabs)
+    const popup = overlayPopupRef.current;
+    if (popup && !popup.closed) {
+      popup.postMessage({ type: "n22-annotation", screenshot, cx, cy, label, isCamera }, "*");
     }
-  }, [notifyAnnotation]);
+  }, []);
 
   // ── Claude ──
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null, camOverride?: string|null) => {
@@ -465,7 +372,13 @@ export default function Home() {
 
   // ── Toggles ──
   const toggleScreenShare = useCallback(async () => {
-    if (isSharing) { screenStreamRef.current?.getTracks().forEach(t=>t.stop()); screenStreamRef.current=null; setIsSharing(false); return; }
+    if (isSharing) {
+      screenStreamRef.current?.getTracks().forEach(t=>t.stop()); screenStreamRef.current=null; setIsSharing(false);
+      // Close overlay popup when screen share stops
+      if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
+      overlayPopupRef.current = null;
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       screenStreamRef.current = stream;
@@ -473,10 +386,20 @@ export default function Home() {
         screenVideoRef.current.srcObject = stream;
         await screenVideoRef.current.play().catch((e) => console.warn("[screen] play error:", e));
       }
-      stream.getVideoTracks()[0].onended = () => { screenStreamRef.current=null; setIsSharing(false); };
+      stream.getVideoTracks()[0].onended = () => {
+        screenStreamRef.current=null; setIsSharing(false);
+        if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
+        overlayPopupRef.current = null;
+      };
       setIsSharing(true);
-      // Pre-request notification permission for cross-tab annotations
-      if (Notification.permission === "default") Notification.requestPermission();
+      // Open overlay popup for cross-tab annotations (user gesture context — not blocked)
+      const w = 420, h = 340;
+      const left = window.screenX + window.outerWidth - w - 20;
+      const top = window.screenY + 60;
+      overlayPopupRef.current = window.open(
+        "/overlay", "n22-overlay",
+        `width=${w},height=${h},left=${left},top=${top},popup=true,resizable=yes`
+      );
     } catch {}
   }, [isSharing]);
 
@@ -499,7 +422,7 @@ export default function Home() {
 
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
-  const pipCanvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayPopupRef = useRef<Window | null>(null);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
@@ -546,6 +469,8 @@ export default function Home() {
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
+    if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
+    overlayPopupRef.current = null;
     dialogueRef.current=[]; stepHistoryRef.current=[];
     speakingRef.current=false; processingRef.current=false;
     setChatOpen(false); setSpeaking(false); setThinking(false);
@@ -653,6 +578,7 @@ export default function Home() {
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     cancelAnimationFrame(animFrameRef.current);
+    if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
   }, []);
 
   // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
@@ -889,7 +815,6 @@ export default function Home() {
       )}
 
       <canvas ref={canvasRef} style={{ display: "none" }} />
-      <canvas ref={pipCanvasRef} style={{ display: "none" }} />
     </div>
   );
 }
