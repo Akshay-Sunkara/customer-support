@@ -27,6 +27,13 @@ export default function Home() {
 
   useEffect(() => { try { setIsEmbed(window.self !== window.top); } catch { setIsEmbed(true); } }, []);
 
+  // Register service worker for cross-tab notifications
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
+
   const chatWidth = isEmbed ? 260 : 380;
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -348,24 +355,22 @@ export default function Home() {
     ctx.font = "500 13px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.fillText(label.length > 50 ? label.slice(0, 47) + "..." : label, 12, imgH + 25);
 
-    // Send as browser notification (works cross-tab, no gesture required)
-    const perm = Notification.permission;
-    console.log("[notification] permission:", perm, "label:", label);
-    if (perm === "granted") {
+    // Send via Service Worker notification (always shows, even when browser is focused)
+    if (Notification.permission === "granted" && navigator.serviceWorker?.controller) {
       try {
+        const reg = await navigator.serviceWorker.ready;
         const dataUrl = pipCanvas.toDataURL("image/png");
-        const n = new Notification("N22", {
+        await reg.showNotification("N22", {
           body: label,
-          icon: "/favicon.ico",
           image: dataUrl,
-          silent: true,
+          icon: "/favicon.ico",
           tag: "n22-annotation",
-        } as NotificationOptions);
-        n.onclick = () => { window.focus(); n.close(); };
-        setTimeout(() => n.close(), 15000);
-      } catch (e) { console.warn("[notification] error:", e); }
-    } else if (perm === "default") {
-      Notification.requestPermission().then((p) => console.log("[notification] permission result:", p));
+          silent: true,
+          requireInteraction: true,
+        } as NotificationOptions & { image: string });
+      } catch (e) { console.warn("[notification] SW error:", e); }
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission();
     }
   }, []);
 
