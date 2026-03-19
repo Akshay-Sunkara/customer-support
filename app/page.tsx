@@ -27,7 +27,15 @@ export default function Home() {
 
   useEffect(() => { try { setIsEmbed(window.self !== window.top); } catch { setIsEmbed(true); } }, []);
 
-  const chatWidth = isEmbed ? 260 : 380;
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  const chatWidth = isEmbed ? 260 : isMobile ? "100vw" : 380;
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
@@ -234,8 +242,14 @@ export default function Home() {
         source.connect(analyserRef.current!);
       }
 
-      audio.onended = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
-      audio.onerror = () => { speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null; };
+      const onDone = () => {
+        speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null;
+        // 1s cooldown — ignore mic input briefly so TTS audio doesn't echo back
+        speakingCooldownRef.current = true;
+        setTimeout(() => { speakingCooldownRef.current = false; }, 1000);
+      };
+      audio.onended = onDone;
+      audio.onerror = onDone;
 
       try {
         await audio.play();
@@ -397,6 +411,7 @@ export default function Home() {
 
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
+  const speakingCooldownRef = useRef(false);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
@@ -479,7 +494,7 @@ export default function Home() {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         if (!e.results[i].isFinal) continue;
         const t = e.results[i][0].transcript.trim();
-        if (!t || isMutedRef.current || speakingRef.current) continue;
+        if (!t || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) continue;
         handleUserMessageRef.current(t, "voice");
       }
     };
@@ -644,7 +659,7 @@ export default function Home() {
             borderRadius: 6, overflow: "hidden",
             border: "1px solid rgba(255,255,255,0.08)",
             background: "#000", transition: "all 0.4s ease",
-            width: isCameraOn ? (isEmbed ? 180 : 360) : 0, height: isCameraOn ? (isEmbed ? 110 : 220) : 0,
+            width: isCameraOn ? (isEmbed ? 180 : isMobile ? 140 : 360) : 0, height: isCameraOn ? (isEmbed ? 110 : isMobile ? 90 : 220) : 0,
             opacity: isCameraOn ? 1 : 0,
           }}>
             <video ref={cameraVideoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -657,7 +672,7 @@ export default function Home() {
           </div>
 
           {/* ── Annotations (cursor + ripple overlay) ── */}
-          <div style={{ position: "absolute", bottom: 80, left: 8, right: 8, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, pointerEvents: "none" }}>
+          <div style={{ position: "absolute", bottom: 100, left: 8, right: 8, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, pointerEvents: "none" }}>
             {annotations.map((ann) => (
               <div key={ann.id} className="animate-toast" style={{ pointerEvents: "auto", width: "100%", maxWidth: 340, borderRadius: 12, overflow: "hidden", background: "rgba(12,12,12,0.95)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" }}>
                 <CursorOverlay screenshot={ann.screenshot} cx={ann.cx} cy={ann.cy} isCamera={ann.isCamera} />
@@ -674,7 +689,7 @@ export default function Home() {
           {/* Wait indicator */}
           {showWait && (
             <div style={{
-              position: "absolute", bottom: 80, left: "50%", transform: "translateX(-50%)",
+              position: "absolute", bottom: 110, left: "50%", transform: "translateX(-50%)",
               zIndex: 30, padding: "6px 16px", borderRadius: 999,
               background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.1)",
               fontSize: 12, color: "rgba(255,255,255,0.4)", letterSpacing: "0.04em",
@@ -686,7 +701,7 @@ export default function Home() {
 
           {/* ── Controls pill ── */}
           <div style={{
-            position: "absolute", bottom: 20, left: "50%",
+            position: "absolute", bottom: "max(20px, env(safe-area-inset-bottom, 0px))", left: "50%",
             transform: `translateX(-50%) translateY(${showControls && phase !== "ending" ? 0 : 20}px)`,
             zIndex: 30, transition: "all 0.5s cubic-bezier(.22,1,.36,1)",
             opacity: (showControls && phase !== "ending") ? (isEmbed && chatOpen ? 0 : 1) : 0,
@@ -716,10 +731,11 @@ export default function Home() {
               </Btn>
               <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 2px" }} />
               <button onClick={endSession} style={{
-                width: 38, height: 38, borderRadius: 10,
+                width: 42, height: 42, borderRadius: 11,
                 background: "rgba(239,68,68,0.6)", border: "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", transition: "background 0.2s",
+                WebkitTapHighlightColor: "transparent",
               }}
                 onMouseEnter={(e) => { e.currentTarget.style.background="rgba(239,68,68,0.85)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background="rgba(239,68,68,0.7)"; }}
@@ -729,14 +745,16 @@ export default function Home() {
             </div>
           </div>
 
-          {/* ── Chat panel (right side) ── */}
+          {/* ── Chat panel (right side, full-width on mobile) ── */}
           <div style={{
-            position: "absolute", top: 0, right: 0, bottom: 0, width: chatOpen ? chatWidth : 0,
-            zIndex: isEmbed ? 35 : 25, transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
+            position: "absolute", top: 0, right: 0, bottom: 0,
+            width: chatOpen ? (isMobile ? "100%" : chatWidth) : 0,
+            zIndex: isEmbed ? 35 : isMobile ? 35 : 25,
+            transition: "width 0.25s cubic-bezier(.22,1,.36,1)", overflow: "hidden",
           }}>
             <div style={{
-              width: chatWidth, height: "100%", display: "flex", flexDirection: "column",
-              background: "rgba(10,10,10,0.97)", borderLeft: "1px solid rgba(255,255,255,0.06)",
+              width: isMobile ? "100%" : chatWidth, height: "100%", display: "flex", flexDirection: "column",
+              background: "rgba(10,10,10,0.97)", borderLeft: isMobile ? "none" : "1px solid rgba(255,255,255,0.06)",
               backdropFilter: "blur(32px)",
             }}>
               {/* Header */}
@@ -793,10 +811,11 @@ export default function Home() {
 function Btn({ on, color, click, children }: { on: boolean; color: string; click: () => void; children: React.ReactNode }) {
   return (
     <button onClick={click} style={{
-      width: 38, height: 38, borderRadius: 10,
+      width: 42, height: 42, borderRadius: 11,
       background: on ? color : "transparent",
       border: "none", display: "flex", alignItems: "center", justifyContent: "center",
       cursor: "pointer", transition: "all 0.15s ease",
+      WebkitTapHighlightColor: "transparent",
     }}
       onMouseEnter={(e) => { if (!on) e.currentTarget.style.background="rgba(255,255,255,0.06)"; }}
       onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = on ? color : "transparent"; }}
