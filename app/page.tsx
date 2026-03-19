@@ -48,6 +48,8 @@ export default function Home() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const smoothedRef = useRef<Float32Array>(new Float32Array(BAR_COUNT));
   const animFrameRef = useRef<number>(0);
+  const lastDrawTimeRef = useRef<number>(0);
+  const lastSpeakingStateRef = useRef<boolean>(false);
   const dialogueRef = useRef<{ role: string; text: string }[]>([]);
   const stepHistoryRef = useRef<string[]>([]);
   const processingRef = useRef(false);
@@ -118,8 +120,22 @@ export default function Home() {
     const freqData = new Uint8Array(BAR_COUNT);
     const smoothed = smoothedRef.current;
 
-    const draw = () => {
+    const IDLE_FRAME_INTERVAL = 66; // ~15fps when idle (not speaking)
+
+    const draw = (now: number) => {
       animFrameRef.current = requestAnimationFrame(draw);
+
+      const isSpeaking = speakingRef.current;
+
+      // Throttle to ~15fps when idle — no visual difference for a slow sine wave
+      if (!isSpeaking) {
+        const elapsed = now - lastDrawTimeRef.current;
+        // Also redraw once on speaking->idle transition to clear the last frame
+        if (elapsed < IDLE_FRAME_INTERVAL && lastSpeakingStateRef.current === isSpeaking) return;
+      }
+      lastDrawTimeRef.current = now;
+      lastSpeakingStateRef.current = isSpeaking;
+
       const dpr = window.devicePixelRatio || 1;
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
@@ -127,7 +143,6 @@ export default function Home() {
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      const isSpeaking = speakingRef.current;
       const analyser = analyserRef.current;
 
       // Get frequency data or generate ambient
@@ -144,7 +159,7 @@ export default function Home() {
         if (isSpeaking && analyser) {
           target = (freqData[i] / 255) * MAX_BAR_H;
         } else {
-          const t = Date.now() / 1400;
+          const t = now / 1400;
           target = (Math.sin(t + i * 0.3) * 0.5 + 0.5) * 18 + 6;
         }
 
@@ -178,7 +193,7 @@ export default function Home() {
       ctx.restore();
     };
 
-    draw();
+    animFrameRef.current = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(animFrameRef.current); window.removeEventListener("resize", resize); };
   }, [phase]);
 
@@ -501,10 +516,11 @@ export default function Home() {
 
     rec.onend = () => {
       // Restart after each utterance (Safari ends after each phrase)
+      // Use 500ms delay to avoid aggressive restarts that cause mobile overheating
       if (!stopped) {
         restartTimeout = setTimeout(() => {
           if (!stopped) try { rec.start(); } catch {}
-        }, 150);
+        }, 500);
       }
     };
 
@@ -515,11 +531,11 @@ export default function Home() {
         setIsMuted(true);
         return;
       }
-      // Restart on transient errors
+      // Restart on transient errors — use longer delay to avoid hot loops on mobile
       if (!stopped) {
         restartTimeout = setTimeout(() => {
           if (!stopped) try { rec.start(); } catch {}
-        }, 300);
+        }, 800);
       }
     };
 
