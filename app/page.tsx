@@ -291,10 +291,14 @@ export default function Home() {
     if (!sharingRef.current) return null;
     const video = screenVideoRef.current; const canvas = canvasRef.current;
     if (!video || !canvas || !video.videoWidth) return null;
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    // Scale down for performance on mobile — full res not needed for Claude vision
+    const maxW = 1280;
+    const scale = video.videoWidth > maxW ? maxW / video.videoWidth : 1;
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     const ctx = canvas.getContext("2d"); if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.5).replace(/^data:image\/\w+;base64,/, "");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.4).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
   const captureCameraFrame = useCallback((): string | null => {
@@ -312,10 +316,10 @@ export default function Home() {
   const showAnnotation = useCallback((screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
     const id = ++annotationIdRef.current;
     const ann = { screenshot, cx, cy, label, isCamera };
-    // Only show floating toast if chat is closed
+    // Only show floating toast if chat is closed — limit to 1 for performance
     if (!chatOpenRef.current) {
-      setAnnotations((prev) => [...prev.slice(-1), { id, ...ann }]);
-      setTimeout(() => setAnnotations((prev) => prev.filter((a) => a.id !== id)), 20000);
+      setAnnotations([{ id, ...ann }]);
+      setTimeout(() => setAnnotations((prev) => prev.filter((a) => a.id !== id)), 10000);
     }
     // Attach to last N22 message in chat
     setMessages((prev) => {
@@ -544,28 +548,43 @@ export default function Home() {
       if (!stopped) try { rec.start(); } catch {}
     };
 
-    // Check mic permission without triggering a prompt (Safari blocks non-gesture getUserMedia)
     const startRec = () => {
       if (!stopped) try { rec.start(); } catch {}
     };
 
-    if (navigator.permissions?.query) {
-      // Modern API: check permission state without prompting
-      navigator.permissions.query({ name: "microphone" as PermissionName }).then((status) => {
-        if (status.state === "denied") {
-          micDeniedRef.current = true;
-          setIsMuted(true);
-        }
-        // Start recognition regardless — Chrome handles its own prompting
-        startRec();
-      }).catch(() => {
-        // permissions.query not supported for mic (Safari) — just try starting
-        startRec();
-      });
+    // On mobile, getUserMedia must be called first so the browser grants mic access
+    // before SpeechRecognition tries to use it. On desktop, SpeechRecognition prompts itself.
+    const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+    if (isMobileBrowser) {
+      // Mobile: request mic permission explicitly, then start recognition
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => {
+          stream.getTracks().forEach(t => t.stop()); // release immediately
+          micDeniedRef.current = false;
+          startRec();
+        })
+        .catch((err) => {
+          if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+            micDeniedRef.current = true;
+            setIsMuted(true);
+          }
+          // Try starting anyway in case it works
+          startRec();
+        });
     } else {
-      // Safari doesn't support permissions.query — try starting directly
-      // SpeechRecognition will handle its own permission prompt on Safari
-      startRec();
+      // Desktop: just start — Chrome prompts via SpeechRecognition, Safari uses permissions.query
+      if (navigator.permissions?.query) {
+        navigator.permissions.query({ name: "microphone" as PermissionName }).then((status) => {
+          if (status.state === "denied") {
+            micDeniedRef.current = true;
+            setIsMuted(true);
+          }
+          startRec();
+        }).catch(() => startRec());
+      } else {
+        startRec();
+      }
     }
 
     return () => {
