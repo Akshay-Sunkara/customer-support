@@ -263,7 +263,7 @@ export default function Home() {
     const video = screenVideoRef.current; const canvas = canvasRef.current;
     if (!video || !canvas || !video.videoWidth) return null;
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true }); if (!ctx) return null;
+    const ctx = canvas.getContext("2d"); if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
     return canvas.toDataURL("image/jpeg", 0.5).replace(/^data:image\/\w+;base64,/, "");
   }, []);
@@ -299,11 +299,6 @@ export default function Home() {
       }
       return copy;
     });
-    // Send to overlay popup (visible across tabs)
-    const popup = overlayPopupRef.current;
-    if (popup && !popup.closed) {
-      popup.postMessage({ type: "n22-annotation", screenshot, cx, cy, label, isCamera }, "*");
-    }
   }, []);
 
   // ── Claude ──
@@ -328,8 +323,6 @@ export default function Home() {
       if (data.cx != null) {
         const l = label || data.label || query;
         showAnnotation(frame, data.cx, data.cy, l, isCamera);
-      } else {
-        console.warn("[grounding] No coordinates returned — element not found");
       }
     } catch (e) { console.warn("[highlight]", e); }
   }, [showAnnotation]);
@@ -372,13 +365,7 @@ export default function Home() {
 
   // ── Toggles ──
   const toggleScreenShare = useCallback(async () => {
-    if (isSharing) {
-      screenStreamRef.current?.getTracks().forEach(t=>t.stop()); screenStreamRef.current=null; setIsSharing(false);
-      // Close overlay popup when screen share stops
-      if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
-      overlayPopupRef.current = null;
-      return;
-    }
+    if (isSharing) { screenStreamRef.current?.getTracks().forEach(t=>t.stop()); screenStreamRef.current=null; setIsSharing(false); return; }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       screenStreamRef.current = stream;
@@ -386,20 +373,8 @@ export default function Home() {
         screenVideoRef.current.srcObject = stream;
         await screenVideoRef.current.play().catch((e) => console.warn("[screen] play error:", e));
       }
-      stream.getVideoTracks()[0].onended = () => {
-        screenStreamRef.current=null; setIsSharing(false);
-        if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
-        overlayPopupRef.current = null;
-      };
+      stream.getVideoTracks()[0].onended = () => { screenStreamRef.current=null; setIsSharing(false); };
       setIsSharing(true);
-      // Open overlay popup for cross-tab annotations (user gesture context — not blocked)
-      const w = 420, h = 340;
-      const left = window.screenX + window.outerWidth - w - 20;
-      const top = window.screenY + 60;
-      overlayPopupRef.current = window.open(
-        "/overlay", "n22-overlay",
-        `width=${w},height=${h},left=${left},top=${top},popup=true,resizable=yes`
-      );
     } catch {}
   }, [isSharing]);
 
@@ -422,7 +397,6 @@ export default function Home() {
 
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
-  const overlayPopupRef = useRef<Window | null>(null);
 
   const toggleMute = useCallback(async () => {
     // If mic was explicitly denied by the browser, re-request permission on unmute
@@ -469,8 +443,6 @@ export default function Home() {
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
-    if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
-    overlayPopupRef.current = null;
     dialogueRef.current=[]; stepHistoryRef.current=[];
     speakingRef.current=false; processingRef.current=false;
     setChatOpen(false); setSpeaking(false); setThinking(false);
@@ -578,7 +550,6 @@ export default function Home() {
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
     cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     cancelAnimationFrame(animFrameRef.current);
-    if (overlayPopupRef.current && !overlayPopupRef.current.closed) overlayPopupRef.current.close();
   }, []);
 
   // ━━━━━━━━━━━━━━━━━━━━ Render ━━━━━━━━━━━━━━━━━━━━
