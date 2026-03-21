@@ -7,22 +7,21 @@ RULES:
 - "speech" = 1-2 short sentences max. Be direct. No filler.
 - Never echo the user's question back. Jump straight to the answer.
 - Never say "I've highlighted" or "I'm pointing to" — just describe where things are.
-- If screen/camera shared: call highlight_element whenever you tell the user to click, tap, open, or navigate to something visible on screen. This includes buttons, links, icons, tabs, menu items, or any element you're directing them toward. Do NOT highlight for non-actionable responses like confirmations ("yes I can see your screen"), general questions, or greetings.
-- If NO screen/camera: never reference highlighting. Ask them to share their screen if they need visual help.
+- If screen shared: call highlight_element whenever you tell the user to click, tap, open, or navigate to something visible on screen. This includes buttons, links, icons, tabs, menu items, or any element you're directing them toward. Do NOT highlight for non-actionable responses like confirmations ("yes I can see your screen"), general questions, or greetings.
+- If NO screen shared: never reference highlighting. Ask them to share their screen if they need visual help.
 - Set action to "done" when task is complete.
 - After giving an instruction, always end with something like "Let me know when you're done" or "Tell me when you're ready for the next step" so the user knows to respond before you continue.`;
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
-  description: "Point to a UI element on screen or physical object on camera.",
+  description: "Point to a UI element on the user's screen.",
   input_schema: {
     type: "object" as const,
     properties: {
       query: { type: "string" as const, description: "Visual description of the element to find" },
       action_label: { type: "string" as const, description: "Short instruction, under 6 words" },
-      source: { type: "string" as const, enum: ["screen", "camera"], description: "screen or camera" },
     },
-    required: ["query", "action_label", "source"],
+    required: ["query", "action_label"],
   },
 };
 
@@ -32,16 +31,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ speech: "Connection issue.", action: "none", done: false });
   }
 
-  const { screenshot, cameraFrame, userMessage, dialogue, stepHistory, isFollowUp, customPrompt } = await req.json();
+  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt } = await req.json();
   const hasScreen = !!screenshot;
-  const hasCamera = !!cameraFrame;
 
   // Build content — minimal context
   const context: string[] = [];
-  if (!hasScreen && !hasCamera) context.push("[No screen or camera shared]");
-  else if (hasScreen && hasCamera) context.push("[Screen + camera shared — image 1 is screen, image 2 is camera]");
-  else if (hasScreen) context.push("[Screen shared — the attached image is the user's screen]");
-  else if (hasCamera) context.push("[Camera shared]");
+  if (!hasScreen) context.push("[No screen shared]");
+  else context.push("[Screen shared — the attached image is the user's screen]");
 
   if (dialogue?.length > 0) {
     const recent = dialogue.slice(-6);
@@ -52,7 +48,6 @@ export async function POST(req: Request) {
 
   const content: any[] = [];
   if (hasScreen) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: screenshot } });
-  if (hasCamera) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: cameraFrame } });
   content.push({ type: "text", text: `${context.join("\n")}\n\nUser: "${userMessage}"` });
 
   try {
@@ -64,7 +59,7 @@ export async function POST(req: Request) {
         max_tokens: 250,
         system: customPrompt ? `${customPrompt}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT,
         messages: [{ role: "user", content }],
-        ...((hasScreen || hasCamera) ? { tools: [HIGHLIGHT_TOOL] } : {}),
+        ...(hasScreen ? { tools: [HIGHLIGHT_TOOL] } : {}),
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -76,7 +71,6 @@ export async function POST(req: Request) {
     let done = false;
     let highlightQuery: string | null = null;
     let actionLabel: string | null = null;
-    let highlightSource: "screen" | "camera" | null = null;
     let toolUseBlock: any = null;
 
     for (const block of data.content || []) {
@@ -87,7 +81,6 @@ export async function POST(req: Request) {
       } else if (block.type === "tool_use" && block.name === "highlight_element") {
         highlightQuery = block.input?.query || null;
         actionLabel = block.input?.action_label || null;
-        highlightSource = block.input?.source || null;
         toolUseBlock = block;
       }
     }
@@ -122,9 +115,8 @@ export async function POST(req: Request) {
     }
 
     if (!speech) speech = "How can I help?";
-    if (highlightQuery && !highlightSource) highlightSource = hasCamera && !hasScreen ? "camera" : "screen";
 
-    return NextResponse.json({ speech, action, done, highlightQuery, actionLabel, highlightSource });
+    return NextResponse.json({ speech, action, done, highlightQuery, actionLabel });
   } catch (e) {
     console.error("[process]", e);
     return NextResponse.json({ speech: "Sorry, say that again?", action: "none", done: false, highlightQuery: null });

@@ -2,8 +2,8 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 
-type Annotation = { id: number; screenshot: string; cx: number; cy: number; label: string; isCamera?: boolean };
-type Msg = { role: "user" | "ceres"; text: string; annotation?: { screenshot: string; cx: number; cy: number; label: string; isCamera?: boolean } };
+type Annotation = { id: number; screenshot: string; cx: number; cy: number; label: string };
+type Msg = { role: "user" | "ceres"; text: string; annotation?: { screenshot: string; cx: number; cy: number; label: string } };
 
 const BAR_COUNT = 40;
 const BAR_W = 4;
@@ -14,7 +14,6 @@ export default function Home() {
   const [phase, setPhase] = useState<"active" | "ending" | "ended">("active");
   const [isMuted, setIsMuted] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
-  const [isCameraOn, setIsCameraOn] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -38,11 +37,9 @@ export default function Home() {
   const chatWidth = isEmbed ? 260 : isMobile ? "100vw" : 380;
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
-  const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveCanvasRef = useRef<HTMLCanvasElement>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -56,7 +53,6 @@ export default function Home() {
   const speakingRef = useRef(false);
   const isMutedRef = useRef(false);
   const sharingRef = useRef(false);
-  const cameraOnRef = useRef(false);
   const annotationIdRef = useRef(0);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -80,7 +76,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => { sharingRef.current = isSharing; }, [isSharing]);
-  useEffect(() => { cameraOnRef.current = isCameraOn; }, [isCameraOn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
   useEffect(() => { chatOpenRef.current = chatOpen; }, [chatOpen]);
 
@@ -322,21 +317,9 @@ export default function Home() {
     return canvas.toDataURL("image/jpeg", 0.4).replace(/^data:image\/\w+;base64,/, "");
   }, []);
 
-  const captureCameraFrame = useCallback((): string | null => {
-    if (!cameraOnRef.current) return null;
-    const video = cameraVideoRef.current; const canvas = canvasRef.current;
-    if (!video || !canvas || !video.videoWidth) return null;
-    const scale = Math.min(1, 640 / video.videoWidth);
-    const w = Math.round(video.videoWidth * scale); const h = Math.round(video.videoHeight * scale);
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext("2d"); if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, w, h);
-    return canvas.toDataURL("image/jpeg", 0.6).replace(/^data:image\/\w+;base64,/, "");
-  }, []);
-
-  const showAnnotation = useCallback((screenshot: string, cx: number, cy: number, label: string, isCamera?: boolean) => {
+  const showAnnotation = useCallback((screenshot: string, cx: number, cy: number, label: string) => {
     const id = ++annotationIdRef.current;
-    const ann = { screenshot, cx, cy, label, isCamera };
+    const ann = { screenshot, cx, cy, label };
     // Only show floating toast if chat is closed — limit to 1 for performance
     if (!chatOpenRef.current) {
       setAnnotations([{ id, ...ann }]);
@@ -356,27 +339,25 @@ export default function Home() {
   }, []);
 
   // ── Claude ──
-  const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null, camOverride?: string|null) => {
+  const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
-    const cameraFrame = camOverride !== undefined ? camOverride : captureCameraFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, cameraFrame, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current }) });
     return res.json();
-  }, [captureFrame, captureCameraFrame]);
+  }, [captureFrame]);
 
-  const handleHighlight = useCallback(async (query: string, frame: string, isCamera: boolean, label?: string) => {
+  const handleHighlight = useCallback(async (query: string, frame: string, label?: string) => {
     try {
-      const vid = isCamera ? cameraVideoRef.current : screenVideoRef.current;
-      let imgW: number, imgH: number;
-      if (isCamera) { const nW=vid?.videoWidth||1280; const s=Math.min(1,640/nW); imgW=Math.round(nW*s); imgH=Math.round((vid?.videoHeight||720)*s); }
-      else { imgW=vid?.videoWidth||1920; imgH=vid?.videoHeight||1080; }
+      const vid = screenVideoRef.current;
+      const imgW = vid?.videoWidth || 1920;
+      const imgH = vid?.videoHeight || 1080;
       const res = await fetch("/api/grounding", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ screenshot: frame, query, imgW, imgH, isCamera }), signal: AbortSignal.timeout(14000) });
+        body: JSON.stringify({ screenshot: frame, query, imgW, imgH }), signal: AbortSignal.timeout(14000) });
       const data = await res.json();
       console.log("[grounding] response:", JSON.stringify(data));
       if (data.cx != null) {
         const l = label || data.label || query;
-        showAnnotation(frame, data.cx, data.cy, l, isCamera);
+        showAnnotation(frame, data.cx, data.cy, l);
       }
     } catch (e) { console.warn("[highlight]", e); }
   }, [showAnnotation]);
@@ -394,26 +375,19 @@ export default function Home() {
     setMessages((prev) => [...prev, { role: "user", text }]);
     processingRef.current = true; setThinking(true);
     try {
-      const ss = captureFrame(); const cam = captureCameraFrame();
-      const r = await processMessage(text, false, ss, cam);
+      const ss = captureFrame();
+      const r = await processMessage(text, false, ss);
       setThinking(false);
       if (!r) { processingRef.current = false; return; }
       if (r.speech) speak(r.speech);
-      if (r.highlightQuery) {
-        const wantsCam = r.highlightSource === "camera";
-        const frame = (wantsCam && cam) ? cam : ss || cam;
-        console.log("[highlight] query:", r.highlightQuery, "wantsCam:", wantsCam, "hasScreenshot:", !!ss, "hasCameraFrame:", !!cam, "frame:", !!frame);
-        if (frame) {
-          handleHighlight(r.highlightQuery, frame, wantsCam && !!cam, r.actionLabel);
-        } else {
-          console.warn("[highlight] No frame available — screen share or camera must be active");
-        }
+      if (r.highlightQuery && ss) {
+        handleHighlight(r.highlightQuery, ss, r.actionLabel);
       }
       if (r.speech) stepHistoryRef.current.push(r.speech);
       if (r.done || r.action === "done") stepHistoryRef.current = [];
     } catch (e) { console.error(e); setThinking(false); }
     processingRef.current = false;
-  }, [processMessage, speak, captureFrame, captureCameraFrame, handleHighlight]);
+  }, [processMessage, speak, captureFrame, handleHighlight]);
 
   useEffect(() => { handleUserMessageRef.current = handleUserMessage; }, [handleUserMessage]);
 
@@ -431,23 +405,6 @@ export default function Home() {
       setIsSharing(true);
     } catch {}
   }, [isSharing]);
-
-  const toggleCamera = useCallback(async () => {
-    if (isCameraOn) {
-      cameraStreamRef.current?.getTracks().forEach(t=>t.stop()); cameraStreamRef.current=null;
-      if (cameraVideoRef.current) cameraVideoRef.current.srcObject=null;
-      setIsCameraOn(false); return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
-      cameraStreamRef.current = stream;
-      if (cameraVideoRef.current) { cameraVideoRef.current.srcObject=stream; await cameraVideoRef.current.play().catch((e)=>console.warn("[camera] play error:", e)); }
-      setIsCameraOn(true);
-    } catch (e) {
-      console.error("[camera] Failed to start camera:", e);
-      setIsCameraOn(false);
-    }
-  }, [isCameraOn]);
 
   const micDeniedRef = useRef(false);
   const restartRecRef = useRef<(() => void) | null>(null);
@@ -524,7 +481,7 @@ export default function Home() {
     setTimeout(async () => {
       try {
         const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ screenshot:null, cameraFrame:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 2 sentences. Mention they can share their screen or camera for visual guidance.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
+          body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 2 sentences. Mention they can share their screen for visual guidance.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
         const data = await res.json(); setThinking(false);
         if (data.speech) speak(data.speech);
       } catch { setThinking(false); }
@@ -536,13 +493,12 @@ export default function Home() {
     // Stop audio/streams immediately
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
-    cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     mediaStreamRef.current?.getTracks().forEach(t=>t.stop());
     if (mediaRecorderRef.current?.state === "recording") try { mediaRecorderRef.current.stop(); } catch {}
     dialogueRef.current=[]; stepHistoryRef.current=[];
     speakingRef.current=false; processingRef.current=false;
     setChatOpen(false); setSpeaking(false); setThinking(false);
-    setIsSharing(false); setIsCameraOn(false);
+    setIsSharing(false);
 
     // Animate out
     setPhase("ending");
@@ -690,7 +646,6 @@ export default function Home() {
   useEffect(() => () => {
     if (currentAudioRef.current) currentAudioRef.current.pause();
     screenStreamRef.current?.getTracks().forEach(t=>t.stop());
-    cameraStreamRef.current?.getTracks().forEach(t=>t.stop());
     cancelAnimationFrame(animFrameRef.current);
   }, []);
 
@@ -702,62 +657,41 @@ export default function Home() {
       {/* ── Ended screen ── */}
       {phase === "ended" && (
         <div style={{
-          position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center", gap: 0,
+          position: "absolute", inset: 0, display: "flex",
+          alignItems: "center", justifyContent: "center",
         }}>
-          {/* Ambient glow */}
+          {/* Subtle radial glow behind button */}
           <div style={{
-            position: "absolute", width: 280, height: 280, borderRadius: "50%",
-            background: "radial-gradient(circle, rgba(255,255,255,0.03) 0%, transparent 70%)",
-            animation: "ended-glow 4s ease-in-out infinite",
+            position: "absolute", width: 320, height: 320, borderRadius: "50%",
+            background: "radial-gradient(circle, rgba(255,255,255,0.025) 0%, transparent 65%)",
+            animation: "ended-glow 5s ease-in-out infinite",
             pointerEvents: "none",
           }} />
 
-          {/* Icon */}
-          <div style={{
-            width: 56, height: 56, borderRadius: 16,
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.05)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) both",
-          }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2z"/>
-            </svg>
-          </div>
-
-          {/* Text */}
-          <span style={{
-            marginTop: 16, fontSize: 13, color: "rgba(255,255,255,0.25)",
-            fontWeight: 400, letterSpacing: "0.04em", textTransform: "uppercase",
-            animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) 0.1s both",
-          }}>
-            Session ended
-          </span>
-
-          {/* Button */}
           <button
             onClick={() => { setPhase("active"); introRanRef.current = false; }}
             style={{
-              marginTop: 24, padding: "10px 28px", borderRadius: 10,
-              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)",
-              color: "rgba(255,255,255,0.5)", fontSize: 12.5, fontWeight: 500,
-              cursor: "pointer", transition: "all 0.2s cubic-bezier(.22,1,.36,1)",
-              fontFamily: "inherit", letterSpacing: "0.01em",
-              animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) 0.2s both",
-              backdropFilter: "blur(12px)",
+              padding: "14px 36px", borderRadius: 12,
+              background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)",
+              color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: 500,
+              cursor: "pointer", transition: "all 0.25s cubic-bezier(.22,1,.36,1)",
+              fontFamily: "'EB Garamond', serif", letterSpacing: "0.02em",
+              animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) both",
+              backdropFilter: "blur(16px)",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.12)";
-              e.currentTarget.style.color = "rgba(255,255,255,0.8)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)";
-              e.currentTarget.style.transform = "translateY(-1px)";
+              e.currentTarget.style.background = "rgba(255,255,255,0.13)";
+              e.currentTarget.style.color = "rgba(255,255,255,0.85)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)";
+              e.currentTarget.style.transform = "translateY(-2px)";
+              e.currentTarget.style.boxShadow = "0 8px 32px rgba(255,255,255,0.04)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-              e.currentTarget.style.color = "rgba(255,255,255,0.5)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
+              e.currentTarget.style.background = "rgba(255,255,255,0.07)";
+              e.currentTarget.style.color = "rgba(255,255,255,0.55)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
               e.currentTarget.style.transform = "translateY(0)";
+              e.currentTarget.style.boxShadow = "none";
             }}
           >
             Start new session
@@ -780,29 +714,11 @@ export default function Home() {
             <canvas ref={waveCanvasRef} style={{ width: "min(700px, 92vw)", height: 300, display: "block" }} />
           </div>
 
-          {/* ── Camera PiP (top-right, Zoom-style) ── */}
-          <div style={{
-            position: "absolute", top: 20, left: 20, zIndex: 20,
-            borderRadius: 6, overflow: "hidden",
-            border: "1px solid rgba(255,255,255,0.08)",
-            background: "#000", transition: "all 0.4s ease",
-            width: isCameraOn ? (isEmbed ? 180 : isMobile ? 140 : 360) : 0, height: isCameraOn ? (isEmbed ? 110 : isMobile ? 90 : 220) : 0,
-            opacity: isCameraOn ? 1 : 0,
-          }}>
-            <video ref={cameraVideoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-            {/* Name tag */}
-            {isCameraOn && (
-              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "16px 10px 6px", background: "linear-gradient(transparent, rgba(0,0,0,0.6))" }}>
-                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", fontWeight: 400 }}>You</span>
-              </div>
-            )}
-          </div>
-
           {/* ── Annotations (cursor + ripple overlay) ── */}
           <div style={{ position: "absolute", bottom: 100, left: 8, right: 8, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, pointerEvents: "none" }}>
             {annotations.map((ann) => (
               <div key={ann.id} className="animate-toast" style={{ pointerEvents: "auto", width: "100%", maxWidth: 340, borderRadius: 12, overflow: "hidden", background: "rgba(12,12,12,0.95)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" }}>
-                <CursorOverlay screenshot={ann.screenshot} cx={ann.cx} cy={ann.cy} isCamera={ann.isCamera} />
+                <CursorOverlay screenshot={ann.screenshot} cx={ann.cx} cy={ann.cy} />
                 <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <p style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.6)", margin: 0 }}>{ann.label}</p>
                   <button onClick={() => setAnnotations(p=>p.filter(a=>a.id!==ann.id))} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.3)", padding: 2 }}>
@@ -844,11 +760,6 @@ export default function Home() {
                 {isMuted
                   ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.12 1.5-.35 2.18"/></svg>
                   : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>}
-              </Btn>
-              <Btn on={isCameraOn} color="rgba(74,222,128,0.5)" click={toggleCamera}>
-                {isCameraOn
-                  ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-                  : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><line x1="1" y1="1" x2="23" y2="23"/></svg>}
               </Btn>
               <Btn on={isSharing} color="rgba(74,222,128,0.5)" click={toggleScreenShare}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -907,7 +818,7 @@ export default function Home() {
                     </p>
                     {msg.annotation && (
                       <div style={{ marginTop: 6, borderRadius: 4, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
-                        <CursorOverlay screenshot={msg.annotation.screenshot} cx={msg.annotation.cx} cy={msg.annotation.cy} isCamera={msg.annotation.isCamera} />
+                        <CursorOverlay screenshot={msg.annotation.screenshot} cx={msg.annotation.cx} cy={msg.annotation.cy} />
                       </div>
                     )}
                   </div>
@@ -950,8 +861,8 @@ function Btn({ on, color, click, children }: { on: boolean; color: string; click
   );
 }
 
-/** Animated overlay — cursor+ripple for screen, crosshair+ring for camera */
-function CursorOverlay({ screenshot, cx, cy, isCamera }: { screenshot: string; cx: number; cy: number; isCamera?: boolean }) {
+/** Animated overlay — cursor+ripple for screen */
+function CursorOverlay({ screenshot, cx, cy }: { screenshot: string; cx: number; cy: number }) {
   const vars = {
     "--cx": `${cx * 100}%`,
     "--cy": `${cy * 100}%`,
@@ -965,38 +876,14 @@ function CursorOverlay({ screenshot, cx, cy, isCamera }: { screenshot: string; c
         style={{ width: "100%", display: "block", filter: "brightness(0.85)" }}
       />
 
-      {isCamera ? (
-        /* Camera: static crosshair + steady ring */
-        <div style={{
-          position: "absolute",
-          left: `${cx * 100}%`, top: `${cy * 100}%`,
-          transform: "translate(-50%, -50%)",
-          pointerEvents: "none",
-        }}>
-          <div style={{
-            width: 18, height: 18, borderRadius: "50%",
-            border: "1.5px solid rgba(255,255,255,0.7)",
-            position: "absolute", top: -9, left: -9,
-          }} />
-          <div style={{
-            width: 4, height: 4, borderRadius: "50%",
-            background: "rgba(255,255,255,0.9)",
-            position: "absolute", top: -2, left: -2,
-          }} />
-        </div>
-      ) : (
-        /* Screen: animated cursor + ripple */
-        <>
-          <div className="ripple-ring ripple-1" />
-          <div className="ripple-ring ripple-2" />
-          <div className="ripple-ring ripple-3" />
-          <div className="cursor-animate" style={{ position: "absolute", pointerEvents: "none", marginLeft: -2, marginTop: -2 }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.5))" }}>
-              <path d="M5 3l14 9-7 1.5L8.5 21z" fill="white" stroke="rgba(0,0,0,0.4)" strokeWidth="1" strokeLinejoin="round" />
-            </svg>
-          </div>
-        </>
-      )}
+      <div className="ripple-ring ripple-1" />
+      <div className="ripple-ring ripple-2" />
+      <div className="ripple-ring ripple-3" />
+      <div className="cursor-animate" style={{ position: "absolute", pointerEvents: "none", marginLeft: -2, marginTop: -2 }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.5))" }}>
+          <path d="M5 3l14 9-7 1.5L8.5 21z" fill="white" stroke="rgba(0,0,0,0.4)" strokeWidth="1" strokeLinejoin="round" />
+        </svg>
+      </div>
     </div>
   );
 }
