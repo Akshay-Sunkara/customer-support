@@ -272,10 +272,10 @@ export default function Home() {
       const audio = new Audio(url);
       currentAudioRef.current = audio;
 
-      // Connect audio to analyser for waveform — skip on mobile where it hijacks
-      // audio routing through AudioContext and produces silence
       const isMobileBrowser = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
+
       if (!isMobileBrowser && audioCtxRef.current.state === "running") {
+        // Desktop: connect audio element directly to analyser
         if (sourceNodeRef.current) {
           try { sourceNodeRef.current.disconnect(); } catch {}
           sourceNodeRef.current = null;
@@ -285,12 +285,35 @@ export default function Home() {
           source.connect(analyserRef.current!);
           sourceNodeRef.current = source;
         } catch {}
+      } else if (isMobileBrowser && audioCtxRef.current.state === "running") {
+        // Mobile: decode audio into buffer, play through a separate analyser for visualization
+        // Audio element plays normally (no routing hijack), buffer source feeds analyser only
+        try {
+          const arrBuf = await blob.arrayBuffer();
+          const audioBuffer = await audioCtxRef.current.decodeAudioData(arrBuf);
+          const vizAnalyser = audioCtxRef.current.createAnalyser();
+          vizAnalyser.fftSize = 256;
+          vizAnalyser.smoothingTimeConstant = 0.55;
+          // NOT connected to destination — visualization only
+          const vizSource = audioCtxRef.current.createBufferSource();
+          vizSource.buffer = audioBuffer;
+          vizSource.connect(vizAnalyser);
+          vizAnalyserRef.current = vizAnalyser;
+          vizSourceRef.current = vizSource;
+          // Override the main analyser ref so the draw loop picks it up
+          analyserRef.current = vizAnalyser;
+        } catch {}
       }
 
       const onDone = () => {
         speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null;
         speakingCooldownRef.current = true;
         setTimeout(() => { speakingCooldownRef.current = false; }, 500);
+        // Clean up mobile viz source
+        if (vizSourceRef.current) {
+          try { vizSourceRef.current.stop(); } catch {}
+          vizSourceRef.current = null;
+        }
       };
       audio.onended = onDone;
       audio.onerror = onDone;
@@ -299,6 +322,10 @@ export default function Home() {
       audio.onplay = () => {
         speakingRef.current = true;
         setSpeaking(true);
+        // Start mobile viz source in sync with audio playback
+        if (vizSourceRef.current) {
+          try { vizSourceRef.current.start(); } catch {}
+        }
       };
 
       try {
@@ -429,6 +456,8 @@ export default function Home() {
   const stopRecRef = useRef<(() => void) | null>(null);
   const speakingCooldownRef = useRef(false);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const vizSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const vizAnalyserRef = useRef<AnalyserNode | null>(null);
   // MediaRecorder fallback refs (for iOS Safari which lacks SpeechRecognition)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -463,20 +492,14 @@ export default function Home() {
 
     // Speak instant greeting while Claude generates a custom intro in the background
     const defaultGreeting = "Hey, I'll be your customer support agent today. Let's get started, what's your issue?";
-    const isMobileBrowser = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
 
     if (customPromptRef.current) {
-      // Custom prompt — let Claude introduce with the right persona
       setThinking(true);
       fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 1 sentence max.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) })
         .then(r => r.json())
         .then(data => { setThinking(false); if (data.speech) speak(data.speech); })
         .catch(() => { setThinking(false); speak(defaultGreeting); });
-    } else if (isMobileBrowser) {
-      // Mobile — show text instantly, skip TTS (autoplay blocked without user gesture)
-      dialogueRef.current.push({ role: "ceres", text: defaultGreeting });
-      setMessages(prev => [...prev, { role: "ceres", text: defaultGreeting }]);
     } else {
       speak(defaultGreeting);
     }
