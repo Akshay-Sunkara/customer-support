@@ -463,15 +463,20 @@ export default function Home() {
 
     // Speak instant greeting while Claude generates a custom intro in the background
     const defaultGreeting = "Hey, I'll be your customer support agent today. Let's get started, what's your issue?";
+    const isMobileBrowser = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
 
-    // Check if there's a custom prompt — if so, let Claude introduce with the right persona
     if (customPromptRef.current) {
+      // Custom prompt — let Claude introduce with the right persona
       setThinking(true);
       fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 1 sentence max.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) })
         .then(r => r.json())
         .then(data => { setThinking(false); if (data.speech) speak(data.speech); })
         .catch(() => { setThinking(false); speak(defaultGreeting); });
+    } else if (isMobileBrowser) {
+      // Mobile — show text instantly, skip TTS (autoplay blocked without user gesture)
+      dialogueRef.current.push({ role: "ceres", text: defaultGreeting });
+      setMessages(prev => [...prev, { role: "ceres", text: defaultGreeting }]);
     } else {
       speak(defaultGreeting);
     }
