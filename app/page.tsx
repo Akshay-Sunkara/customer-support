@@ -497,8 +497,8 @@ export default function Home() {
     if (phase !== "active") return;
 
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const isAndroid = /android/i.test(navigator.userAgent);
-    console.log("[stt] init — phase:", phase, "SR available:", !!SR, "android:", isAndroid, "UA:", navigator.userAgent.slice(0, 80));
+    const isMobile = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
+    console.log("[stt] init — SR:", !!SR, "mobile:", isMobile, "UA:", navigator.userAgent.slice(0, 100));
 
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -638,17 +638,20 @@ export default function Home() {
       };
     };
 
-    // ── Primary: Web Speech API ──
-    if (SR) {
+    // ── Primary: Web Speech API (skip on mobile — unreliable on iOS Chrome & Android) ──
+    if (SR && !isMobile) {
       usingFallbackSTTRef.current = false;
-      if (isAndroid) console.log("[stt] Android — continuous:false with auto-restart");
+      console.log("[stt] using Web Speech API (desktop)");
 
       const startWithPermission = async () => {
         try {
+          console.log("[stt] requesting mic permission...");
           const s = await navigator.mediaDevices.getUserMedia({ audio: true });
           s.getTracks().forEach(t => t.stop());
           micDeniedRef.current = false;
-        } catch {
+          console.log("[stt] mic permission granted");
+        } catch (e) {
+          console.error("[stt] mic permission denied:", e);
           micDeniedRef.current = true;
           setIsMuted(true);
           return;
@@ -657,7 +660,7 @@ export default function Home() {
         const rec = new SR();
         rec.lang = "en-US";
         rec.interimResults = false;
-        rec.continuous = !isAndroid;
+        rec.continuous = true;
         rec.maxAlternatives = 1;
 
         // Watchdog: if no result after 8s, fall back to Cartesia
