@@ -555,81 +555,11 @@ export default function Home() {
     }, 1200);
   }, [phase]);
 
-  // ── Speech-to-text: SpeechRecognition (desktop/Android) or MediaRecorder fallback (iOS) ──
+  // ── Speech-to-text: MediaRecorder + Cartesia STT (all browsers) ──
   useEffect(() => {
     if (phase !== "active") return;
 
     let stopped = false;
-    let restartTimeout: ReturnType<typeof setTimeout> | null = null;
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    // ── Branch A: SpeechRecognition available (Chrome, desktop Safari, Android Chrome) ──
-    if (SR) {
-      const rec = new SR();
-      rec.lang = "en-US";
-      rec.interimResults = false;
-      rec.continuous = false;
-      rec.maxAlternatives = 1;
-
-      rec.onresult = (e: any) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (!e.results[i].isFinal) continue;
-          const t = e.results[i][0].transcript.trim();
-          if (!t || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) continue;
-          handleUserMessageRef.current(t, "voice");
-        }
-      };
-
-      rec.onend = () => {
-        // Don't restart if stopped, muted, or agent is speaking (speaking-watcher handles restart)
-        if (stopped || speakingRef.current || speakingCooldownRef.current) return;
-        restartTimeout = setTimeout(() => {
-          if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
-        }, 500);
-      };
-
-      rec.onerror = (e: any) => {
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-          micDeniedRef.current = true;
-          setIsMuted(true);
-          return;
-        }
-        if (stopped || speakingRef.current) return;
-        restartTimeout = setTimeout(() => {
-          if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
-        }, 800);
-      };
-
-      // Expose start/stop so the speaking-watcher effect can control recognition
-      restartRecRef.current = () => {
-        if (!stopped && !isMutedRef.current) try { rec.start(); } catch {}
-      };
-      stopRecRef.current = () => {
-        try { rec.stop(); } catch {}
-        if (restartTimeout) { clearTimeout(restartTimeout); restartTimeout = null; }
-      };
-
-      // Start — mobile Android needs getUserMedia first
-      const isMobileAndroid = /Android/i.test(navigator.userAgent);
-      if (isMobileAndroid) {
-        navigator.mediaDevices.getUserMedia({ audio: true })
-          .then((s) => { s.getTracks().forEach(t => t.stop()); micDeniedRef.current = false; if (!stopped) try { rec.start(); } catch {} })
-          .catch(() => { if (!stopped) try { rec.start(); } catch {} });
-      } else {
-        if (!stopped) try { rec.start(); } catch {}
-      }
-
-      return () => {
-        stopped = true;
-        restartRecRef.current = null;
-        stopRecRef.current = null;
-        if (restartTimeout) clearTimeout(restartTimeout);
-        try { rec.stop(); } catch {}
-      };
-    }
-
-    // ── Branch B: No SpeechRecognition (iOS Safari) — use MediaRecorder + /api/stt ──
-    console.log("[stt] SpeechRecognition not available, using MediaRecorder + Whisper fallback");
     usingFallbackSTTRef.current = true;
 
     const sendToSTT = async (chunks: Blob[], mimeType: string) => {
