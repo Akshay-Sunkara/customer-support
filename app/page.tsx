@@ -494,19 +494,156 @@ export default function Home() {
     }, 1200);
   }, [phase]);
 
-  // ── Speech-to-text: Web Speech API (primary) or MediaRecorder + Cartesia (iOS fallback) ──
+  // ── Speech-to-text: Web Speech API (primary) or MediaRecorder + Cartesia (fallback) ──
   useEffect(() => {
     if (phase !== "active") return;
 
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let fallbackCleanup: (() => void) | null = null;
+
+    // ── Fallback: MediaRecorder + Cartesia STT (iOS Safari, or watchdog fallback) ──
+    const initFallbackSTT = () => {
+      console.log("[stt] starting MediaRecorder + Cartesia fallback");
+      usingFallbackSTTRef.current = true;
+      let recorder: MediaRecorder | null = null;
+      let micStream: MediaStream | null = null;
+      let vadCtx: AudioContext | null = null;
+      let vadInterval: ReturnType<typeof setInterval> | null = null;
+      let chosenMime = "audio/webm";
+
+      const stopRec = () => {
+        if (recorder?.state === "recording") try { recorder.stop(); } catch {}
+      };
+      const startRec = () => {
+        if (stopped || speakingRef.current || speakingCooldownRef.current) return;
+        if (recorder?.state === "inactive") {
+          audioChunksRef.current = [];
+          try { recorder.start(250); } catch {}
+        }
+      };
+
+      stopRecRef.current = stopRec;
+      restartRecRef.current = startRec;
+
+      const sendToSTT = async (chunks: Blob[]) => {
+        if (chunks.length === 0) return;
+        const blob = new Blob(chunks, { type: chosenMime });
+        console.log("[stt] sending to Cartesia, size:", blob.size);
+        if (blob.size < 800) return;
+        try {
+          const res = await fetch("/api/stt", {
+            method: "POST",
+            headers: { "Content-Type": chosenMime },
+            body: await blob.arrayBuffer(),
+          });
+          const data = await res.json();
+          console.log("[stt] Cartesia response:", JSON.stringify(data));
+          const transcript = data.transcript?.trim();
+          if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
+            handleUserMessageRef.current(transcript, "voice");
+          }
+        } catch (e) { console.error("[stt] fetch error:", e); }
+      };
+
+      const init = async () => {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          console.log("[stt] fallback mic granted");
+          mediaStreamRef.current = micStream;
+          micDeniedRef.current = false;
+
+          vadCtx = new AudioContext();
+          const src = vadCtx.createMediaStreamSource(micStream);
+          const analyser = vadCtx.createAnalyser();
+          analyser.fftSize = 256;
+          src.connect(analyser);
+          vadAnalyserRef.current = analyser;
+          const freqBuf = new Uint8Array(analyser.frequencyBinCount);
+
+          let noiseFloor = 15;
+          setTimeout(() => {
+            analyser.getByteFrequencyData(freqBuf);
+            const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
+            noiseFloor = avg + 10;
+            console.log("[stt] noise floor:", noiseFloor.toFixed(1));
+          }, 500);
+
+          chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
+            : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+            : "audio/webm";
+
+          recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunksRef.current.push(e.data);
+          };
+
+          recorder.onstop = () => {
+            const captured = [...audioChunksRef.current];
+            audioChunksRef.current = [];
+            if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
+            if (!stopped && !speakingRef.current && !speakingCooldownRef.current) {
+              setTimeout(startRec, 150);
+            }
+          };
+
+          startRec();
+
+          vadInterval = setInterval(() => {
+            if (speakingRef.current || speakingCooldownRef.current) {
+              if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+              return;
+            }
+            analyser.getByteFrequencyData(freqBuf);
+            const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
+
+            if (avg > noiseFloor) {
+              if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+            } else if (!silenceTimerRef.current && recorder?.state === "recording" && audioChunksRef.current.length > 0) {
+              silenceTimerRef.current = setTimeout(() => {
+                silenceTimerRef.current = null;
+                stopRec();
+              }, 1100);
+            }
+          }, 120);
+
+        } catch (err: any) {
+          console.error("[stt] fallback mic failed:", err);
+          if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+            micDeniedRef.current = true;
+            setIsMuted(true);
+          }
+        }
+      };
+
+      init();
+
+      fallbackCleanup = () => {
+        usingFallbackSTTRef.current = false;
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        if (vadInterval) clearInterval(vadInterval);
+        if (recorder && recorder.state !== "inactive") try { recorder.stop(); } catch {}
+        mediaRecorderRef.current = null;
+        micStream?.getTracks().forEach(t => t.stop());
+        mediaStreamRef.current = null;
+        if (vadCtx) vadCtx.close().catch(() => {});
+        vadAnalyserRef.current = null;
+      };
+    };
+
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
-    // ── Primary: Web Speech API (all browsers that support it — excludes iOS Safari) ──
+    // ── Primary: Web Speech API ──
     if (SR) {
       usingFallbackSTTRef.current = false;
+      const isAndroid = /android/i.test(navigator.userAgent);
+      if (isAndroid) console.log("[stt] Android detected — using continuous:false with auto-restart");
 
-      // Pre-request mic permission on ALL platforms for reliability
       const startWithPermission = async () => {
         try {
           const s = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -521,10 +658,27 @@ export default function Home() {
         const rec = new SR();
         rec.lang = "en-US";
         rec.interimResults = false;
-        rec.continuous = true;
+        rec.continuous = !isAndroid;
         rec.maxAlternatives = 1;
 
+        // Watchdog: if no result after 8s, fall back to Cartesia
+        let fellBack = false;
+        const startWatchdog = () => {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          watchdogTimer = setTimeout(() => {
+            if (stopped || fellBack || speakingRef.current) return;
+            console.log("[stt] watchdog: no results after 8s, falling back to Cartesia");
+            fellBack = true;
+            try { rec.stop(); } catch {}
+            initFallbackSTT();
+          }, 8000);
+        };
+        const clearWatchdog = () => {
+          if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+        };
+
         rec.onresult = (e: any) => {
+          clearWatchdog();
           for (let i = e.resultIndex; i < e.results.length; i++) {
             if (!e.results[i].isFinal) continue;
             const t = e.results[i][0].transcript.trim();
@@ -534,9 +688,11 @@ export default function Home() {
         };
 
         rec.onend = () => {
-          if (stopped || speakingRef.current || speakingCooldownRef.current) return;
+          if (stopped || fellBack || speakingRef.current || speakingCooldownRef.current) return;
           restartTimeout = setTimeout(() => {
-            if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
+            if (!stopped && !fellBack && !speakingRef.current) {
+              try { rec.start(); startWatchdog(); } catch {}
+            }
           }, 300);
         };
 
@@ -544,23 +700,31 @@ export default function Home() {
           if (e.error === "not-allowed" || e.error === "service-not-allowed") {
             micDeniedRef.current = true;
             setIsMuted(true);
+            clearWatchdog();
             return;
           }
-          if (stopped || speakingRef.current) return;
+          if (stopped || fellBack || speakingRef.current) return;
           restartTimeout = setTimeout(() => {
-            if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
+            if (!stopped && !fellBack && !speakingRef.current) {
+              try { rec.start(); startWatchdog(); } catch {}
+            }
           }, 500);
         };
 
         restartRecRef.current = () => {
-          if (!stopped) try { rec.start(); } catch {}
+          if (!stopped && !fellBack) {
+            try { rec.start(); startWatchdog(); } catch {}
+          }
         };
         stopRecRef.current = () => {
           try { rec.stop(); } catch {}
+          clearWatchdog();
           if (restartTimeout) { clearTimeout(restartTimeout); restartTimeout = null; }
         };
 
-        if (!stopped) try { rec.start(); } catch {}
+        if (!stopped) {
+          try { rec.start(); startWatchdog(); } catch {}
+        }
       };
 
       startWithPermission();
@@ -570,156 +734,19 @@ export default function Home() {
         restartRecRef.current = null;
         stopRecRef.current = null;
         if (restartTimeout) clearTimeout(restartTimeout);
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        if (fallbackCleanup) fallbackCleanup();
       };
     }
 
-    // ── Fallback: MediaRecorder + Cartesia STT (mobile browsers) ──
-    console.log("[stt] using MediaRecorder + Cartesia fallback (mobile)");
-    let recorder: MediaRecorder | null = null;
-    let micStream: MediaStream | null = null;
-    let vadCtx: AudioContext | null = null;
-    let vadInterval: ReturnType<typeof setInterval> | null = null;
-    let chosenMime = "audio/webm";
-    usingFallbackSTTRef.current = true;
-
-    const stopRec = () => {
-      console.log("[stt] stopRec, state:", recorder?.state);
-      if (recorder?.state === "recording") try { recorder.stop(); } catch {}
-    };
-    const startRec = () => {
-      if (stopped || speakingRef.current || speakingCooldownRef.current) {
-        console.log("[stt] startRec skipped — stopped:", stopped, "speaking:", speakingRef.current, "cooldown:", speakingCooldownRef.current);
-        return;
-      }
-      if (recorder?.state === "inactive") {
-        audioChunksRef.current = [];
-        try { recorder.start(250); console.log("[stt] recorder started"); } catch (e) { console.error("[stt] start failed:", e); }
-      }
-    };
-
-    stopRecRef.current = stopRec;
-    restartRecRef.current = startRec;
-
-    const sendToSTT = async (chunks: Blob[]) => {
-      if (chunks.length === 0) { console.log("[stt] no chunks to send"); return; }
-      const blob = new Blob(chunks, { type: chosenMime });
-      console.log("[stt] sending to STT, size:", blob.size, "mime:", chosenMime);
-      if (blob.size < 800) { console.log("[stt] blob too small, skip"); return; }
-      try {
-        const res = await fetch("/api/stt", {
-          method: "POST",
-          headers: { "Content-Type": chosenMime },
-          body: await blob.arrayBuffer(),
-        });
-        const data = await res.json();
-        console.log("[stt] API response:", JSON.stringify(data));
-        const transcript = data.transcript?.trim();
-        if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
-          console.log("[stt] accepted:", transcript);
-          handleUserMessageRef.current(transcript, "voice");
-        } else if (transcript) {
-          console.log("[stt] rejected — muted:", isMutedRef.current, "speaking:", speakingRef.current);
-        }
-      } catch (e) { console.error("[stt] fetch error:", e); }
-    };
-
-    const init = async () => {
-      try {
-        console.log("[stt] requesting mic...");
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
-        console.log("[stt] mic granted, tracks:", micStream.getAudioTracks().length);
-        mediaStreamRef.current = micStream;
-        micDeniedRef.current = false;
-
-        // VAD
-        vadCtx = new AudioContext();
-        const src = vadCtx.createMediaStreamSource(micStream);
-        const analyser = vadCtx.createAnalyser();
-        analyser.fftSize = 256;
-        src.connect(analyser);
-        vadAnalyserRef.current = analyser;
-        const freqBuf = new Uint8Array(analyser.frequencyBinCount);
-
-        // Calibrate noise floor from first 500ms
-        let noiseFloor = 15;
-        setTimeout(() => {
-          analyser.getByteFrequencyData(freqBuf);
-          const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-          noiseFloor = avg + 10;
-          console.log("[stt] noise floor calibrated:", noiseFloor.toFixed(1), "(ambient:", avg.toFixed(1), ")");
-        }, 500);
-
-        chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
-          : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
-          : "audio/webm";
-        console.log("[stt] mime:", chosenMime);
-
-        recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
-        mediaRecorderRef.current = recorder;
-
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-
-        recorder.onstop = () => {
-          const captured = [...audioChunksRef.current];
-          console.log("[stt] recorder stopped, chunks:", captured.length, "size:", captured.reduce((s, b) => s + b.size, 0));
-          audioChunksRef.current = [];
-          if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
-          if (!stopped && !speakingRef.current && !speakingCooldownRef.current) {
-            setTimeout(startRec, 150);
-          }
-        };
-
-        startRec();
-
-        // VAD with adaptive noise floor
-        let vadLogCount = 0;
-        vadInterval = setInterval(() => {
-          if (speakingRef.current || speakingCooldownRef.current) {
-            if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-            return;
-          }
-          analyser.getByteFrequencyData(freqBuf);
-          const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-          if (++vadLogCount % 25 === 0) console.log("[stt] VAD:", avg.toFixed(1), "floor:", noiseFloor.toFixed(1), "rec:", recorder?.state, "chunks:", audioChunksRef.current.length);
-
-          if (avg > noiseFloor) {
-            if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-          } else if (!silenceTimerRef.current && recorder?.state === "recording" && audioChunksRef.current.length > 0) {
-            silenceTimerRef.current = setTimeout(() => {
-              silenceTimerRef.current = null;
-              stopRec();
-            }, 1100);
-          }
-        }, 120);
-
-      } catch (err: any) {
-        console.error("[stt] mic init failed:", err);
-        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
-          micDeniedRef.current = true;
-          setIsMuted(true);
-        }
-      }
-    };
-
-    init();
+    // ── No SpeechRecognition (iOS Safari) — use fallback directly ──
+    initFallbackSTT();
 
     return () => {
       stopped = true;
       stopRecRef.current = null;
       restartRecRef.current = null;
-      usingFallbackSTTRef.current = false;
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (vadInterval) clearInterval(vadInterval);
-      if (recorder && recorder.state !== "inactive") try { recorder.stop(); } catch {}
-      mediaRecorderRef.current = null;
-      micStream?.getTracks().forEach(t => t.stop());
-      mediaStreamRef.current = null;
-      if (vadCtx) vadCtx.close().catch(() => {});
-      vadAnalyserRef.current = null;
+      if (fallbackCleanup) fallbackCleanup();
     };
   }, [phase]);
 
