@@ -528,8 +528,8 @@ export default function Home() {
 
       const connectWS = async (apiKey: string) => {
         if (stopped) return;
-        const url = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&smart_format=true&endpointing=300&utterance_end_ms=1000";
-        ws = new WebSocket(url, ["token", apiKey]);
+        const url = `wss://api.deepgram.com/v1/listen?token=${apiKey}&model=nova-3&language=en&punctuate=true&smart_format=true&endpointing=300&utterance_end_ms=1000`;
+        ws = new WebSocket(url);
 
         ws.onopen = () => {
           console.log("[stt] Deepgram WebSocket connected");
