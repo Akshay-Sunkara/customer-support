@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
-  const apiKey = process.env.CARTESIA_API_KEY;
+  const apiKey = process.env.DEEPGRAM_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "Missing CARTESIA_API_KEY" }, { status: 500 });
+    return NextResponse.json({ error: "Missing DEEPGRAM_API_KEY" }, { status: 500 });
   }
 
   try {
@@ -13,34 +13,25 @@ export async function POST(req: Request) {
     }
 
     const contentType = req.headers.get("content-type") || "audio/webm";
-    const ext = contentType.includes("mp4") ? "mp4" : contentType.includes("mpeg") ? "mp3" : "webm";
 
-    const formData = new FormData();
-    formData.append(
-      "file",
-      new Blob([audioBlob], { type: contentType }),
-      `audio.${ext}`,
-    );
-    formData.append("model", "ink-whisper");
-    formData.append("language", "en");
-
-    const res = await fetch("https://api.cartesia.ai/stt", {
+    const res = await fetch("https://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&smart_format=true", {
       method: "POST",
       headers: {
-        "Cartesia-Version": "2025-04-16",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Token ${apiKey}`,
+        "Content-Type": contentType,
       },
-      body: formData,
+      body: audioBlob,
     });
 
     if (!res.ok) {
       const err = await res.text();
-      console.error("[stt] Cartesia error:", res.status, err);
+      console.error("[stt] Deepgram error:", res.status, err);
       return NextResponse.json({ error: "STT failed" }, { status: res.status });
     }
 
     const data = await res.json();
-    return NextResponse.json({ transcript: data.text || "" });
+    const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
+    return NextResponse.json({ transcript });
   } catch (e) {
     console.error("[stt] Error:", e);
     return NextResponse.json({ error: "STT error" }, { status: 500 });
