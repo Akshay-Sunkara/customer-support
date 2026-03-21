@@ -501,10 +501,9 @@ export default function Home() {
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-    // ── Primary: Web Speech API (desktop only — unreliable on mobile) ──
-    if (SR && !isMobileBrowser) {
+    // ── Primary: Web Speech API (all browsers that support it — excludes iOS Safari) ──
+    if (SR) {
       usingFallbackSTTRef.current = false;
 
       // Pre-request mic permission on ALL platforms for reliability
