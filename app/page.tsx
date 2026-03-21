@@ -507,23 +507,55 @@ export default function Home() {
 
   const endSession = useCallback(() => {
     if (phase === "ending" || phase === "ended") return;
-    // Stop audio/streams immediately
-    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current=null; }
-    screenStreamRef.current?.getTracks().forEach(t=>t.stop());
-    mediaStreamRef.current?.getTracks().forEach(t=>t.stop());
-    if (mediaRecorderRef.current?.state === "recording") try { mediaRecorderRef.current.stop(); } catch {}
-    dialogueRef.current=[]; stepHistoryRef.current=[];
-    speakingRef.current=false; processingRef.current=false;
+
+    // ── Kill all audio ──
+    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current.src = ""; currentAudioRef.current = null; }
+    if (vizSourceRef.current) { try { vizSourceRef.current.stop(); } catch {} vizSourceRef.current = null; }
+    if (sourceNodeRef.current) { try { sourceNodeRef.current.disconnect(); } catch {} sourceNodeRef.current = null; }
+    vizAnalyserRef.current = null;
+
+    // ── Kill all media streams ──
+    screenStreamRef.current?.getTracks().forEach(t => t.stop()); screenStreamRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach(t => t.stop()); mediaStreamRef.current = null;
+
+    // ── Kill MediaRecorder ──
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try { mediaRecorderRef.current.stop(); } catch {}
+    }
+    mediaRecorderRef.current = null;
+
+    // ── Kill STT refs (SpeechRecognition or fallback) ──
+    stopRecRef.current?.();
+    stopRecRef.current = null;
+    restartRecRef.current = null;
+
+    // ── Kill VAD / timers ──
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    vadAnalyserRef.current = null;
+
+    // ── Kill AudioContext ──
+    if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
+    analyserRef.current = null;
+
+    // ── Kill waveform animation ──
+    cancelAnimationFrame(animFrameRef.current);
+    smoothedRef.current.fill(0);
+
+    // ── Reset all state ──
+    audioChunksRef.current = [];
+    dialogueRef.current = []; stepHistoryRef.current = [];
+    speakingRef.current = false; processingRef.current = false;
+    speakingCooldownRef.current = false;
+    usingFallbackSTTRef.current = false;
     setChatOpen(false); setSpeaking(false); setThinking(false);
-    setIsSharing(false);
+    setIsSharing(false); setIsMuted(false);
 
     // Animate out
     setPhase("ending");
     setTimeout(() => {
-      smoothedRef.current.fill(0);
       setMessages([]); setAnnotations([]);
       setPhase("ended");
-      // Notify parent iframe (bubble embed) to close
       try { window.parent.postMessage({ type: "n22-session-end" }, "*"); } catch {}
     }, 1200);
   }, [phase]);
