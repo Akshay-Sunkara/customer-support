@@ -162,18 +162,16 @@ export default function Home() {
         if (isSpeaking) {
           target = (freqData[i] / 255) * MAX_BAR_H;
         } else {
-          const t = now / 1400;
-          target = (Math.sin(t + i * 0.3) * 0.5 + 0.5) * 18 + 6;
+          target = 3;
         }
 
-        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.12);
+        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.15);
         const barH = Math.max(1, smoothed[i]);
         const x = startX + i * (BAR_W + BAR_GAP);
 
-        // Pure white, high contrast against black
         const alpha = isSpeaking
           ? Math.min(1, barH / MAX_BAR_H * 1.2 + 0.15)
-          : Math.min(0.5, barH / MAX_BAR_H * 1.5 + 0.25);
+          : 0.15;
 
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
 
@@ -483,9 +481,10 @@ export default function Home() {
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-    // ── Primary: Web Speech API (Chrome, Edge, Safari desktop, Android) ──
-    if (SR) {
+    // ── Primary: Web Speech API (desktop only — unreliable on mobile) ──
+    if (SR && !isMobileBrowser) {
       usingFallbackSTTRef.current = false;
 
       // Pre-request mic permission on ALL platforms for reliability
