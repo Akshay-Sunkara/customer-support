@@ -40,9 +40,7 @@ export default function Home() {
       const origWarn = console.warn;
       const addLog = (prefix: string, ...args: any[]) => {
         const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
-        if (msg.includes("[stt]") || msg.includes("[tts]") || msg.includes("[mic]")) {
-          setDebugLogs(prev => [...prev.slice(-30), `${prefix}${msg}`]);
-        }
+        setDebugLogs(prev => [...prev.slice(-40), `${prefix}${msg}`]);
       };
       console.log = (...args) => { origLog(...args); addLog("", ...args); };
       console.error = (...args) => { origErr(...args); addLog("ERR ", ...args); };
@@ -498,6 +496,10 @@ export default function Home() {
   useEffect(() => {
     if (phase !== "active") return;
 
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const isAndroid = /android/i.test(navigator.userAgent);
+    console.log("[stt] init — phase:", phase, "SR available:", !!SR, "android:", isAndroid, "UA:", navigator.userAgent.slice(0, 80));
+
     let stopped = false;
     let restartTimeout: ReturnType<typeof setTimeout> | null = null;
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -636,13 +638,10 @@ export default function Home() {
       };
     };
 
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
     // ── Primary: Web Speech API ──
     if (SR) {
       usingFallbackSTTRef.current = false;
-      const isAndroid = /android/i.test(navigator.userAgent);
-      if (isAndroid) console.log("[stt] Android detected — using continuous:false with auto-restart");
+      if (isAndroid) console.log("[stt] Android — continuous:false with auto-restart");
 
       const startWithPermission = async () => {
         try {
