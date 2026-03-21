@@ -228,8 +228,8 @@ export default function Home() {
       if (!audioCtxRef.current) {
         audioCtxRef.current = new AudioContext();
         analyserRef.current = audioCtxRef.current.createAnalyser();
-        analyserRef.current.fftSize = 128;
-        analyserRef.current.smoothingTimeConstant = 0.75;
+        analyserRef.current.fftSize = 256;
+        analyserRef.current.smoothingTimeConstant = 0.55;
         analyserRef.current.connect(audioCtxRef.current.destination);
       }
       if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
@@ -263,8 +263,8 @@ export default function Home() {
       if (!audioCtxRef.current) {
         audioCtxRef.current = new AudioContext();
         analyserRef.current = audioCtxRef.current.createAnalyser();
-        analyserRef.current.fftSize = 128;
-        analyserRef.current.smoothingTimeConstant = 0.75;
+        analyserRef.current.fftSize = 256;
+        analyserRef.current.smoothingTimeConstant = 0.55;
         analyserRef.current.connect(audioCtxRef.current.destination);
       }
       if (audioCtxRef.current.state === "suspended") {
@@ -274,11 +274,8 @@ export default function Home() {
       const audio = new Audio(url);
       currentAudioRef.current = audio;
 
-      // On mobile, skip createMediaElementSource — it hijacks audio routing through
-      // AudioContext which is often suspended on mobile, producing silence.
-      // On desktop, connect to analyser for real waveform visualization.
-      const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-      if (!isMobileBrowser && audioCtxRef.current.state === "running") {
+      // Connect audio to analyser for real waveform data on all platforms
+      if (audioCtxRef.current.state === "running") {
         if (sourceNodeRef.current) {
           try { sourceNodeRef.current.disconnect(); } catch {}
           sourceNodeRef.current = null;
