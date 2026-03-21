@@ -421,7 +421,6 @@ export default function Home() {
   const usingFallbackSTTRef = useRef(false);
 
   const toggleMute = useCallback(async () => {
-    // If mic was explicitly denied by the browser, re-request permission on unmute
     if (isMuted && micDeniedRef.current) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -429,44 +428,27 @@ export default function Home() {
         micDeniedRef.current = false;
         setIsMuted(false);
         restartRecRef.current?.();
-      } catch {
-        return; // still denied
-      }
+      } catch { return; }
       return;
     }
-    // For MediaRecorder fallback: pause/resume recording
-    if (usingFallbackSTTRef.current) {
-      const rec = mediaRecorderRef.current;
-      if (isMuted) {
-        // Unmuting — restart recording
-        if (rec && rec.state === "inactive") try { rec.start(250); } catch {}
-      } else {
-        // Muting — stop recording
-        if (rec && rec.state === "recording") try { rec.stop(); } catch {}
-        audioChunksRef.current = []; // discard partial audio
-      }
+    if (isMuted) {
+      setIsMuted(false);
+      restartRecRef.current?.();
+    } else {
+      stopRecRef.current?.();
+      audioChunksRef.current = [];
+      setIsMuted(true);
     }
-    setIsMuted(p => !p);
   }, [isMuted]);
 
-  // ── Stop/pause mic input while agent speaks (bulletproof echo prevention) ──
+  // ── Stop/start mic input while agent speaks (echo prevention) ──
   useEffect(() => {
     if (speaking) {
-      // Agent started speaking — STOP all mic input
       stopRecRef.current?.();
-      if (mediaRecorderRef.current?.state === "recording") {
-        try { mediaRecorderRef.current.pause(); } catch {}
-      }
-      audioChunksRef.current = []; // discard any partial audio
+      audioChunksRef.current = [];
       if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
     } else {
-      // Agent stopped speaking — restart mic after cooldown (1s) + buffer
-      const timer = setTimeout(() => {
-        restartRecRef.current?.();
-        if (mediaRecorderRef.current?.state === "paused") {
-          try { mediaRecorderRef.current.resume(); } catch {}
-        }
-      }, 1200);
+      const timer = setTimeout(() => { restartRecRef.current?.(); }, 1200);
       return () => clearTimeout(timer);
     }
   }, [speaking]);
@@ -516,16 +498,36 @@ export default function Home() {
     if (phase !== "active") return;
 
     let stopped = false;
+    let recorder: MediaRecorder | null = null;
+    let micStream: MediaStream | null = null;
+    let vadCtx: AudioContext | null = null;
+    let vadInterval: ReturnType<typeof setInterval> | null = null;
+    let chosenMime = "audio/webm";
     usingFallbackSTTRef.current = true;
 
-    const sendToSTT = async (chunks: Blob[], mimeType: string) => {
+    const stopRec = () => {
+      if (recorder?.state === "recording") try { recorder.stop(); } catch {}
+    };
+
+    const startRec = () => {
+      if (stopped || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) return;
+      if (recorder?.state === "inactive") {
+        audioChunksRef.current = [];
+        try { recorder.start(250); } catch {}
+      }
+    };
+
+    stopRecRef.current = stopRec;
+    restartRecRef.current = startRec;
+
+    const sendToSTT = async (chunks: Blob[]) => {
       if (chunks.length === 0) return;
-      const blob = new Blob(chunks, { type: mimeType });
-      if (blob.size < 2000) return; // skip tiny recordings
+      const blob = new Blob(chunks, { type: chosenMime });
+      if (blob.size < 800) return;
       try {
         const res = await fetch("/api/stt", {
           method: "POST",
-          headers: { "Content-Type": mimeType },
+          headers: { "Content-Type": chosenMime },
           body: await blob.arrayBuffer(),
         });
         const data = await res.json();
@@ -533,33 +535,32 @@ export default function Home() {
         if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
           handleUserMessageRef.current(transcript, "voice");
         }
-      } catch (e) { console.error("[stt-fallback]", e); }
+      } catch (e) { console.error("[stt]", e); }
     };
 
-    let micStream: MediaStream | null = null;
-    let recorder: MediaRecorder | null = null;
-    let vadCtx: AudioContext | null = null;
-
-    const startFallback = async () => {
+    const init = async () => {
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
         mediaStreamRef.current = micStream;
         micDeniedRef.current = false;
 
-        // VAD via AnalyserNode
+        // VAD
         vadCtx = new AudioContext();
-        const source = vadCtx.createMediaStreamSource(micStream);
-        const vadAnalyser = vadCtx.createAnalyser();
-        vadAnalyser.fftSize = 256;
-        source.connect(vadAnalyser);
-        vadAnalyserRef.current = vadAnalyser;
+        const src = vadCtx.createMediaStreamSource(micStream);
+        const analyser = vadCtx.createAnalyser();
+        analyser.fftSize = 256;
+        src.connect(analyser);
+        vadAnalyserRef.current = analyser;
+        const freqBuf = new Uint8Array(analyser.frequencyBinCount);
 
-        // Determine MIME type
-        const mimeType = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
+        // MIME type — prefer mp4 (iOS), then webm opus, then webm
+        chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
           : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
           : "audio/webm";
 
-        recorder = new MediaRecorder(micStream, { mimeType });
+        recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
         mediaRecorderRef.current = recorder;
 
         recorder.ondataavailable = (e) => {
@@ -567,52 +568,41 @@ export default function Home() {
         };
 
         recorder.onstop = () => {
-          const chunks = [...audioChunksRef.current];
+          const captured = [...audioChunksRef.current];
           audioChunksRef.current = [];
-          // Don't send if agent was speaking (echo prevention)
-          if (!speakingRef.current && !speakingCooldownRef.current) {
-            sendToSTT(chunks, mimeType);
-          }
-          // Restart recording after a brief pause
-          if (!stopped && !isMutedRef.current && recorder?.state !== "recording") {
-            setTimeout(() => {
-              if (!stopped && !isMutedRef.current && recorder && recorder.state === "inactive") {
-                try { recorder.start(250); } catch {}
-              }
-            }, 300);
+          if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
+          // Auto-restart if conditions allow
+          if (!stopped && !speakingRef.current && !speakingCooldownRef.current && !isMutedRef.current) {
+            setTimeout(startRec, 150);
           }
         };
 
         // Start recording
-        recorder.start(250);
+        startRec();
 
-        // VAD: detect silence and stop recorder to trigger transcription
-        const vadData = new Uint8Array(vadAnalyser.frequencyBinCount);
-        vadIntervalRef.current = setInterval(() => {
+        // VAD: poll for silence → stop recorder → triggers onstop → sends to STT
+        vadInterval = setInterval(() => {
           if (speakingRef.current || speakingCooldownRef.current || isMutedRef.current) {
-            // While agent speaks, clear silence timer and don't process
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
             return;
           }
-          vadAnalyser.getByteFrequencyData(vadData);
-          const avg = vadData.reduce((sum, v) => sum + v, 0) / vadData.length;
+          analyser.getByteFrequencyData(freqBuf);
+          const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
 
-          if (avg > 12) {
-            // Voice detected — clear silence timer
+          if (avg > 6) {
+            // Voice detected
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
           } else if (!silenceTimerRef.current && recorder?.state === "recording" && audioChunksRef.current.length > 0) {
-            // Silence detected — wait 1.5s then stop to trigger transcription
+            // Silence — wait 1.1s then stop to trigger transcription
             silenceTimerRef.current = setTimeout(() => {
               silenceTimerRef.current = null;
-              if (recorder?.state === "recording") {
-                try { recorder.stop(); } catch {}
-              }
-            }, 1500);
+              stopRec();
+            }, 1100);
           }
-        }, 200);
+        }, 120);
 
       } catch (err: any) {
-        console.error("[stt-fallback] Failed to start:", err);
+        console.error("[stt] mic init failed:", err);
         if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
           micDeniedRef.current = true;
           setIsMuted(true);
@@ -620,20 +610,15 @@ export default function Home() {
       }
     };
 
-    restartRecRef.current = () => {
-      if (recorder?.state === "inactive") {
-        try { recorder.start(250); } catch {}
-      }
-    };
-
-    startFallback();
+    init();
 
     return () => {
       stopped = true;
+      stopRecRef.current = null;
       restartRecRef.current = null;
       usingFallbackSTTRef.current = false;
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+      if (vadInterval) clearInterval(vadInterval);
       if (recorder && recorder.state !== "inactive") try { recorder.stop(); } catch {}
       mediaRecorderRef.current = null;
       micStream?.getTracks().forEach(t => t.stop());
@@ -675,7 +660,7 @@ export default function Home() {
               background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)",
               color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: 500,
               cursor: "pointer", transition: "all 0.25s cubic-bezier(.22,1,.36,1)",
-              fontFamily: "'EB Garamond', serif", letterSpacing: "0.02em",
+              fontFamily: "-apple-system, 'Helvetica Neue', sans-serif", letterSpacing: "0.03em",
               animation: "ended-rise 0.6s cubic-bezier(.22,1,.36,1) both",
               backdropFilter: "blur(16px)",
             }}
