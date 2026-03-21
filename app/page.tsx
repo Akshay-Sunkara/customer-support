@@ -505,117 +505,104 @@ export default function Home() {
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
     let fallbackCleanup: (() => void) | null = null;
 
-    // ── Fallback: MediaRecorder + Cartesia STT (iOS Safari, or watchdog fallback) ──
+    // ── Fallback: Deepgram streaming WebSocket STT (mobile, or watchdog fallback) ──
     const initFallbackSTT = () => {
-      console.log("[stt] starting MediaRecorder + Cartesia fallback");
+      console.log("[stt] starting Deepgram streaming STT");
       usingFallbackSTTRef.current = true;
-      let recorder: MediaRecorder | null = null;
       let micStream: MediaStream | null = null;
-      let vadCtx: AudioContext | null = null;
-      let vadInterval: ReturnType<typeof setInterval> | null = null;
-      let chosenMime = "audio/webm";
+      let recorder: MediaRecorder | null = null;
+      let ws: WebSocket | null = null;
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const stopRec = () => {
-        if (recorder?.state === "recording") try { recorder.stop(); } catch {}
+      const pauseMic = () => {
+        if (recorder?.state === "recording") try { recorder.pause(); } catch {}
       };
-      const startRec = () => {
-        if (stopped || speakingRef.current || speakingCooldownRef.current) return;
-        if (recorder?.state === "inactive") {
-          audioChunksRef.current = [];
-          try { recorder.start(250); } catch {}
-        }
+      const resumeMic = () => {
+        if (stopped) return;
+        if (recorder?.state === "paused") try { recorder.resume(); } catch {}
+        else if (recorder?.state === "inactive") try { recorder.start(100); } catch {}
       };
 
-      stopRecRef.current = stopRec;
-      restartRecRef.current = startRec;
+      stopRecRef.current = pauseMic;
+      restartRecRef.current = resumeMic;
 
-      const sendToSTT = async (chunks: Blob[]) => {
-        if (chunks.length === 0) return;
-        const blob = new Blob(chunks, { type: chosenMime });
-        console.log("[stt] sending to Cartesia, size:", blob.size);
-        if (blob.size < 800) return;
-        try {
-          const res = await fetch("/api/stt", {
-            method: "POST",
-            headers: { "Content-Type": chosenMime },
-            body: await blob.arrayBuffer(),
-          });
-          const data = await res.json();
-          console.log("[stt] Cartesia response:", JSON.stringify(data));
-          const transcript = data.transcript?.trim();
-          if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
-            handleUserMessageRef.current(transcript, "voice");
+      const connectWS = async (apiKey: string) => {
+        if (stopped) return;
+        const url = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&smart_format=true&endpointing=300&utterance_end_ms=1000";
+        ws = new WebSocket(url, ["token", apiKey]);
+
+        ws.onopen = () => {
+          console.log("[stt] Deepgram WebSocket connected");
+          // Start or resume recording
+          if (recorder?.state === "inactive") {
+            try { recorder.start(100); } catch {}
+          } else if (recorder?.state === "paused") {
+            try { recorder.resume(); } catch {}
           }
-        } catch (e) { console.error("[stt] fetch error:", e); }
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "Results" && data.is_final) {
+              const transcript = data.channel?.alternatives?.[0]?.transcript?.trim();
+              if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
+                console.log("[stt] Deepgram transcript:", transcript);
+                handleUserMessageRef.current(transcript, "voice");
+              }
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          console.log("[stt] Deepgram WebSocket closed");
+          if (!stopped) {
+            reconnectTimer = setTimeout(() => connectWS(apiKey), 1000);
+          }
+        };
+
+        ws.onerror = (e) => {
+          console.error("[stt] Deepgram WebSocket error:", e);
+        };
       };
 
       const init = async () => {
         try {
+          // Get Deepgram API key
+          const tokenRes = await fetch("/api/stt/token");
+          const tokenData = await tokenRes.json();
+          if (!tokenData.key) {
+            console.error("[stt] no Deepgram API key");
+            return;
+          }
+
+          // Get mic
           micStream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
           });
-          console.log("[stt] fallback mic granted");
+          console.log("[stt] mic granted for Deepgram streaming");
           mediaStreamRef.current = micStream;
           micDeniedRef.current = false;
 
-          vadCtx = new AudioContext();
-          const src = vadCtx.createMediaStreamSource(micStream);
-          const analyser = vadCtx.createAnalyser();
-          analyser.fftSize = 256;
-          src.connect(analyser);
-          vadAnalyserRef.current = analyser;
-          const freqBuf = new Uint8Array(analyser.frequencyBinCount);
-
-          let noiseFloor = 15;
-          setTimeout(() => {
-            analyser.getByteFrequencyData(freqBuf);
-            const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-            noiseFloor = avg + 10;
-            console.log("[stt] noise floor:", noiseFloor.toFixed(1));
-          }, 500);
-
-          chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
-            : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+          // Set up MediaRecorder to stream chunks to WebSocket
+          const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+            : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
             : "audio/webm";
 
-          recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
+          recorder = new MediaRecorder(micStream, { mimeType });
           mediaRecorderRef.current = recorder;
 
           recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) audioChunksRef.current.push(e.data);
-          };
-
-          recorder.onstop = () => {
-            const captured = [...audioChunksRef.current];
-            audioChunksRef.current = [];
-            if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
-            if (!stopped && !speakingRef.current && !speakingCooldownRef.current) {
-              setTimeout(startRec, 150);
+            if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN && !speakingRef.current && !speakingCooldownRef.current) {
+              ws.send(e.data);
             }
           };
 
-          startRec();
-
-          vadInterval = setInterval(() => {
-            if (speakingRef.current || speakingCooldownRef.current) {
-              if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-              return;
-            }
-            analyser.getByteFrequencyData(freqBuf);
-            const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-
-            if (avg > noiseFloor) {
-              if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-            } else if (!silenceTimerRef.current && recorder?.state === "recording" && audioChunksRef.current.length > 0) {
-              silenceTimerRef.current = setTimeout(() => {
-                silenceTimerRef.current = null;
-                stopRec();
-              }, 1100);
-            }
-          }, 120);
+          // Connect WebSocket
+          await connectWS(tokenData.key);
 
         } catch (err: any) {
-          console.error("[stt] fallback mic failed:", err);
+          console.error("[stt] Deepgram init failed:", err);
           if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
             micDeniedRef.current = true;
             setIsMuted(true);
@@ -627,14 +614,12 @@ export default function Home() {
 
       fallbackCleanup = () => {
         usingFallbackSTTRef.current = false;
-        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        if (vadInterval) clearInterval(vadInterval);
+        if (reconnectTimer) clearTimeout(reconnectTimer);
         if (recorder && recorder.state !== "inactive") try { recorder.stop(); } catch {}
         mediaRecorderRef.current = null;
+        if (ws) { try { ws.close(); } catch {} ws = null; }
         micStream?.getTracks().forEach(t => t.stop());
         mediaStreamRef.current = null;
-        if (vadCtx) vadCtx.close().catch(() => {});
-        vadAnalyserRef.current = null;
       };
     };
 
