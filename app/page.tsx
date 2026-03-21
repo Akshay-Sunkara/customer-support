@@ -506,14 +506,16 @@ export default function Home() {
     usingFallbackSTTRef.current = true;
 
     const stopRec = () => {
+      console.log("[stt] stopRec called, recorder state:", recorder?.state);
       if (recorder?.state === "recording") try { recorder.stop(); } catch {}
     };
 
     const startRec = () => {
+      console.log("[stt] startRec called, stopped:", stopped, "muted:", isMutedRef.current, "speaking:", speakingRef.current, "cooldown:", speakingCooldownRef.current, "recorder state:", recorder?.state);
       if (stopped || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) return;
       if (recorder?.state === "inactive") {
         audioChunksRef.current = [];
-        try { recorder.start(250); } catch {}
+        try { recorder.start(250); console.log("[stt] recorder started"); } catch (e) { console.error("[stt] recorder.start failed:", e); }
       }
     };
 
@@ -521,9 +523,10 @@ export default function Home() {
     restartRecRef.current = startRec;
 
     const sendToSTT = async (chunks: Blob[]) => {
-      if (chunks.length === 0) return;
+      if (chunks.length === 0) { console.log("[stt] sendToSTT: no chunks"); return; }
       const blob = new Blob(chunks, { type: chosenMime });
-      if (blob.size < 800) return;
+      console.log("[stt] sendToSTT: chunks:", chunks.length, "blob size:", blob.size, "mime:", chosenMime);
+      if (blob.size < 800) { console.log("[stt] sendToSTT: blob too small, skipping"); return; }
       try {
         const res = await fetch("/api/stt", {
           method: "POST",
@@ -531,18 +534,24 @@ export default function Home() {
           body: await blob.arrayBuffer(),
         });
         const data = await res.json();
+        console.log("[stt] API response:", JSON.stringify(data));
         const transcript = data.transcript?.trim();
         if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
+          console.log("[stt] transcript accepted:", transcript);
           handleUserMessageRef.current(transcript, "voice");
+        } else if (transcript) {
+          console.log("[stt] transcript REJECTED — muted:", isMutedRef.current, "speaking:", speakingRef.current, "cooldown:", speakingCooldownRef.current);
         }
-      } catch (e) { console.error("[stt]", e); }
+      } catch (e) { console.error("[stt] fetch error:", e); }
     };
 
     const init = async () => {
       try {
+        console.log("[stt] requesting mic...");
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
+        console.log("[stt] mic granted, tracks:", micStream.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, readyState: t.readyState })));
         mediaStreamRef.current = micStream;
         micDeniedRef.current = false;
 
@@ -559,18 +568,22 @@ export default function Home() {
         chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
           : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
           : "audio/webm";
+        console.log("[stt] chosen MIME:", chosenMime);
 
         recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
         mediaRecorderRef.current = recorder;
+        console.log("[stt] MediaRecorder created, state:", recorder.state);
 
         recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
+          if (e.data.size > 0) { audioChunksRef.current.push(e.data); }
         };
 
         recorder.onstop = () => {
+          console.log("[stt] recorder stopped, chunks:", audioChunksRef.current.length, "total size:", audioChunksRef.current.reduce((s, b) => s + b.size, 0));
           const captured = [...audioChunksRef.current];
           audioChunksRef.current = [];
           if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
+          else console.log("[stt] skipping send — speaking:", speakingRef.current, "cooldown:", speakingCooldownRef.current);
           // Auto-restart if conditions allow
           if (!stopped && !speakingRef.current && !speakingCooldownRef.current && !isMutedRef.current) {
             setTimeout(startRec, 150);
@@ -581,6 +594,7 @@ export default function Home() {
         startRec();
 
         // VAD: poll for silence → stop recorder → triggers onstop → sends to STT
+        let vadLogCounter = 0;
         vadInterval = setInterval(() => {
           if (speakingRef.current || speakingCooldownRef.current || isMutedRef.current) {
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
@@ -588,6 +602,11 @@ export default function Home() {
           }
           analyser.getByteFrequencyData(freqBuf);
           const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
+
+          // Log VAD level every ~2s so we can see if mic is picking up
+          if (++vadLogCounter % 16 === 0) {
+            console.log("[stt] VAD avg:", avg.toFixed(1), "recorder:", recorder?.state, "chunks:", audioChunksRef.current.length, "silenceTimer:", !!silenceTimerRef.current);
+          }
 
           if (avg > 6) {
             // Voice detected
