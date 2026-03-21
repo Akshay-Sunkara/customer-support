@@ -187,7 +187,7 @@ export default function Home() {
           target = 3;
         }
 
-        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.4 : 0.15);
+        smoothed[i] += (target - smoothed[i]) * (isSpeaking ? 0.18 : 0.12);
         const barH = Math.max(1, smoothed[i]);
         const x = startX + i * (BAR_W + BAR_GAP);
 
@@ -227,7 +227,7 @@ export default function Home() {
         audioCtxRef.current = new AudioContext();
         analyserRef.current = audioCtxRef.current.createAnalyser();
         analyserRef.current.fftSize = 256;
-        analyserRef.current.smoothingTimeConstant = 0.55;
+        analyserRef.current.smoothingTimeConstant = 0.82;
         analyserRef.current.connect(audioCtxRef.current.destination);
       }
       if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
@@ -262,7 +262,7 @@ export default function Home() {
         audioCtxRef.current = new AudioContext();
         analyserRef.current = audioCtxRef.current.createAnalyser();
         analyserRef.current.fftSize = 256;
-        analyserRef.current.smoothingTimeConstant = 0.55;
+        analyserRef.current.smoothingTimeConstant = 0.82;
         analyserRef.current.connect(audioCtxRef.current.destination);
       }
       if (audioCtxRef.current.state === "suspended") {
@@ -293,7 +293,7 @@ export default function Home() {
           const audioBuffer = await audioCtxRef.current.decodeAudioData(arrBuf);
           const vizAnalyser = audioCtxRef.current.createAnalyser();
           vizAnalyser.fftSize = 256;
-          vizAnalyser.smoothingTimeConstant = 0.55;
+          vizAnalyser.smoothingTimeConstant = 0.82;
           // NOT connected to destination — visualization only
           const vizSource = audioCtxRef.current.createBufferSource();
           vizSource.buffer = audioBuffer;
