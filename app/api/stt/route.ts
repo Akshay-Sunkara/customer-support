@@ -14,7 +14,7 @@ export async function POST(req: Request) {
 
     const contentType = req.headers.get("content-type") || "audio/webm";
 
-    const res = await fetch("https://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&smart_format=true", {
+    const res = await fetch("https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true&no_delay=true&endpointing=false", {
       method: "POST",
       headers: {
         Authorization: `Token ${apiKey}`,

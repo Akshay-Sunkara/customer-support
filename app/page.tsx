@@ -458,15 +458,21 @@ export default function Home() {
     if (phase !== "active") return;
     if (introRanRef.current) return;
     introRanRef.current = true;
-    setThinking(true);
-    setTimeout(async () => {
-      try {
-        const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 2 sentences. Mention they can share their screen for visual guidance.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) });
-        const data = await res.json(); setThinking(false);
-        if (data.speech) speak(data.speech);
-      } catch { setThinking(false); }
-    }, 500);
+
+    // Speak instant greeting while Claude generates a custom intro in the background
+    const defaultGreeting = "Hi there! How can I help you today?";
+
+    // Check if there's a custom prompt — if so, let Claude introduce with the right persona
+    if (customPromptRef.current) {
+      setThinking(true);
+      fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 1 sentence max.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) })
+        .then(r => r.json())
+        .then(data => { setThinking(false); if (data.speech) speak(data.speech); })
+        .catch(() => { setThinking(false); speak(defaultGreeting); });
+    } else {
+      speak(defaultGreeting);
+    }
   }, [speak, phase]);
 
   const endSession = useCallback(() => {
@@ -522,7 +528,7 @@ export default function Home() {
         if (stopped || speakingRef.current || speakingCooldownRef.current) return;
         if (recorder?.state === "inactive") {
           audioChunksRef.current = [];
-          try { recorder.start(250); } catch {}
+          try { recorder.start(150); } catch {}
         }
       };
 
@@ -566,14 +572,19 @@ export default function Home() {
           src.connect(analyser);
           const freqBuf = new Uint8Array(analyser.frequencyBinCount);
 
-          // Calibrate noise floor
-          let noiseFloor = 15;
-          setTimeout(() => {
+          // Calibrate noise floor — sample 3 times over 300ms for accuracy
+          let noiseFloor = 20;
+          let samples: number[] = [];
+          const calibrate = setInterval(() => {
             analyser.getByteFrequencyData(freqBuf);
-            const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-            noiseFloor = avg + 10;
-            console.log("[stt] noise floor:", noiseFloor.toFixed(1));
-          }, 500);
+            samples.push(freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length);
+            if (samples.length >= 3) {
+              clearInterval(calibrate);
+              const avg = samples.reduce((s, v) => s + v, 0) / samples.length;
+              noiseFloor = avg + 8;
+              console.log("[stt] noise floor:", noiseFloor.toFixed(1));
+            }
+          }, 100);
 
           chosenMime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
             : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
