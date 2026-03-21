@@ -272,8 +272,10 @@ export default function Home() {
       const audio = new Audio(url);
       currentAudioRef.current = audio;
 
-      // Connect audio to analyser for real waveform data on all platforms
-      if (audioCtxRef.current.state === "running") {
+      // Connect audio to analyser for waveform — skip on mobile where it hijacks
+      // audio routing through AudioContext and produces silence
+      const isMobileBrowser = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
+      if (!isMobileBrowser && audioCtxRef.current.state === "running") {
         if (sourceNodeRef.current) {
           try { sourceNodeRef.current.disconnect(); } catch {}
           sourceNodeRef.current = null;
@@ -460,7 +462,7 @@ export default function Home() {
     introRanRef.current = true;
 
     // Speak instant greeting while Claude generates a custom intro in the background
-    const defaultGreeting = "Hi there! How can I help you today?";
+    const defaultGreeting = "Hey, I'll be your customer support agent today. Let's get started, what's your issue?";
 
     // Check if there's a custom prompt — if so, let Claude introduce with the right persona
     if (customPromptRef.current) {
