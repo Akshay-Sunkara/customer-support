@@ -277,7 +277,7 @@ export default function Home() {
         speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null;
         // 1s cooldown — ignore mic input briefly so TTS audio doesn't echo back
         speakingCooldownRef.current = true;
-        setTimeout(() => { speakingCooldownRef.current = false; }, 1000);
+        setTimeout(() => { speakingCooldownRef.current = false; }, 500);
       };
       audio.onended = onDone;
       audio.onerror = onDone;
@@ -420,26 +420,9 @@ export default function Home() {
   const vadIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const usingFallbackSTTRef = useRef(false);
 
-  const toggleMute = useCallback(async () => {
-    if (isMuted && micDeniedRef.current) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop());
-        micDeniedRef.current = false;
-        setIsMuted(false);
-        restartRecRef.current?.();
-      } catch { return; }
-      return;
-    }
-    if (isMuted) {
-      setIsMuted(false);
-      restartRecRef.current?.();
-    } else {
-      stopRecRef.current?.();
-      audioChunksRef.current = [];
-      setIsMuted(true);
-    }
-  }, [isMuted]);
+  const toggleMute = useCallback(() => {
+    setIsMuted(p => !p);
+  }, []);
 
   // ── Stop/start mic input while agent speaks (echo prevention) ──
   useEffect(() => {
@@ -448,7 +431,7 @@ export default function Home() {
       audioChunksRef.current = [];
       if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
     } else {
-      const timer = setTimeout(() => { restartRecRef.current?.(); }, 1200);
+      const timer = setTimeout(() => { restartRecRef.current?.(); }, 600);
       return () => clearTimeout(timer);
     }
   }, [speaking]);
@@ -535,7 +518,7 @@ export default function Home() {
         rec.onend = () => {
           if (stopped || speakingRef.current || speakingCooldownRef.current) return;
           restartTimeout = setTimeout(() => {
-            if (!stopped && !speakingRef.current && !isMutedRef.current) try { rec.start(); } catch {}
+            if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
           }, 300);
         };
 
@@ -547,12 +530,12 @@ export default function Home() {
           }
           if (stopped || speakingRef.current) return;
           restartTimeout = setTimeout(() => {
-            if (!stopped && !speakingRef.current && !isMutedRef.current) try { rec.start(); } catch {}
+            if (!stopped && !speakingRef.current) try { rec.start(); } catch {}
           }, 500);
         };
 
         restartRecRef.current = () => {
-          if (!stopped && !isMutedRef.current) try { rec.start(); } catch {}
+          if (!stopped) try { rec.start(); } catch {}
         };
         stopRecRef.current = () => {
           try { rec.stop(); } catch {}
@@ -584,7 +567,7 @@ export default function Home() {
       if (recorder?.state === "recording") try { recorder.stop(); } catch {}
     };
     const startRec = () => {
-      if (stopped || isMutedRef.current || speakingRef.current || speakingCooldownRef.current) return;
+      if (stopped || speakingRef.current || speakingCooldownRef.current) return;
       if (recorder?.state === "inactive") {
         audioChunksRef.current = [];
         try { recorder.start(250); } catch {}
@@ -652,7 +635,7 @@ export default function Home() {
           const captured = [...audioChunksRef.current];
           audioChunksRef.current = [];
           if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
-          if (!stopped && !speakingRef.current && !speakingCooldownRef.current && !isMutedRef.current) {
+          if (!stopped && !speakingRef.current && !speakingCooldownRef.current) {
             setTimeout(startRec, 150);
           }
         };
@@ -661,7 +644,7 @@ export default function Home() {
 
         // VAD with adaptive noise floor
         vadInterval = setInterval(() => {
-          if (speakingRef.current || speakingCooldownRef.current || isMutedRef.current) {
+          if (speakingRef.current || speakingCooldownRef.current) {
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
             return;
           }
@@ -795,12 +778,14 @@ export default function Home() {
           {showWait && (
             <div style={{
               position: "absolute", bottom: 110, left: "50%", transform: "translateX(-50%)",
-              zIndex: 30, padding: "6px 16px", borderRadius: 999,
-              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.1)",
-              fontSize: 12, color: "rgba(255,255,255,0.4)", letterSpacing: "0.04em",
+              zIndex: 30, padding: "8px 20px", borderRadius: 999,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)",
+              fontSize: 12.5, color: "rgba(255,255,255,0.45)", letterSpacing: "0.01em",
+              fontFamily: "-apple-system, 'Helvetica Neue', sans-serif", fontWeight: 400,
+              backdropFilter: "blur(16px)",
               animation: "fade-in 0.2s ease, fade-out 0.3s ease 1.7s forwards",
             }}>
-              Wait until N22 finishes
+              Let N22 finish speaking
             </div>
           )}
 
