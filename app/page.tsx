@@ -23,8 +23,32 @@ export default function Home() {
   const [showControls, setShowControls] = useState(true);
   const [showWait, setShowWait] = useState(false);
   const [isEmbed, setIsEmbed] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const debugRef = useRef(false);
 
   useEffect(() => { try { setIsEmbed(window.self !== window.top); } catch { setIsEmbed(true); } }, []);
+
+  // Debug mode via ?debug=true
+  useEffect(() => {
+    const on = new URLSearchParams(window.location.search).has("debug");
+    setDebugMode(on);
+    debugRef.current = on;
+    if (on) {
+      const origLog = console.log;
+      const origErr = console.error;
+      const origWarn = console.warn;
+      const addLog = (prefix: string, ...args: any[]) => {
+        const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
+        if (msg.includes("[stt]") || msg.includes("[tts]") || msg.includes("[mic]")) {
+          setDebugLogs(prev => [...prev.slice(-30), `${prefix}${msg}`]);
+        }
+      };
+      console.log = (...args) => { origLog(...args); addLog("", ...args); };
+      console.error = (...args) => { origErr(...args); addLog("ERR ", ...args); };
+      console.warn = (...args) => { origWarn(...args); addLog("WARN ", ...args); };
+    }
+  }, []);
 
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -226,8 +250,6 @@ export default function Home() {
   // ── Cartesia TTS with AudioContext ──
   const speak = useCallback(async (text: string) => {
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
-    speakingRef.current = true;
-    setSpeaking(true);
     dialogueRef.current.push({ role: "ceres", text });
     setMessages((prev) => [...prev, { role: "ceres", text }]);
 
@@ -257,7 +279,6 @@ export default function Home() {
       // On desktop, connect to analyser for real waveform visualization.
       const isMobileBrowser = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (!isMobileBrowser && audioCtxRef.current.state === "running") {
-        // Disconnect previous source node
         if (sourceNodeRef.current) {
           try { sourceNodeRef.current.disconnect(); } catch {}
           sourceNodeRef.current = null;
@@ -266,24 +287,26 @@ export default function Home() {
           const source = audioCtxRef.current.createMediaElementSource(audio);
           source.connect(analyserRef.current!);
           sourceNodeRef.current = source;
-        } catch {
-          // If connection fails, audio still plays directly
-        }
+        } catch {}
       }
 
       const onDone = () => {
         speakingRef.current = false; setSpeaking(false); URL.revokeObjectURL(url); currentAudioRef.current = null;
-        // 1s cooldown — ignore mic input briefly so TTS audio doesn't echo back
         speakingCooldownRef.current = true;
         setTimeout(() => { speakingCooldownRef.current = false; }, 500);
       };
       audio.onended = onDone;
       audio.onerror = onDone;
 
+      // Only set speaking=true when audio actually starts playing
+      audio.onplay = () => {
+        speakingRef.current = true;
+        setSpeaking(true);
+      };
+
       try {
         await audio.play();
       } catch {
-        // Autoplay blocked — wait for user gesture then retry
         const retryPlay = async () => {
           if (audioCtxRef.current?.state === "suspended") await audioCtxRef.current.resume().catch(() => {});
           audio.play().catch(() => {});
@@ -554,7 +577,8 @@ export default function Home() {
       };
     }
 
-    // ── Fallback: MediaRecorder + Cartesia STT (iOS Safari) ──
+    // ── Fallback: MediaRecorder + Cartesia STT (mobile browsers) ──
+    console.log("[stt] using MediaRecorder + Cartesia fallback (mobile)");
     let recorder: MediaRecorder | null = null;
     let micStream: MediaStream | null = null;
     let vadCtx: AudioContext | null = null;
@@ -563,13 +587,17 @@ export default function Home() {
     usingFallbackSTTRef.current = true;
 
     const stopRec = () => {
+      console.log("[stt] stopRec, state:", recorder?.state);
       if (recorder?.state === "recording") try { recorder.stop(); } catch {}
     };
     const startRec = () => {
-      if (stopped || speakingRef.current || speakingCooldownRef.current) return;
+      if (stopped || speakingRef.current || speakingCooldownRef.current) {
+        console.log("[stt] startRec skipped — stopped:", stopped, "speaking:", speakingRef.current, "cooldown:", speakingCooldownRef.current);
+        return;
+      }
       if (recorder?.state === "inactive") {
         audioChunksRef.current = [];
-        try { recorder.start(250); } catch {}
+        try { recorder.start(250); console.log("[stt] recorder started"); } catch (e) { console.error("[stt] start failed:", e); }
       }
     };
 
@@ -577,9 +605,10 @@ export default function Home() {
     restartRecRef.current = startRec;
 
     const sendToSTT = async (chunks: Blob[]) => {
-      if (chunks.length === 0) return;
+      if (chunks.length === 0) { console.log("[stt] no chunks to send"); return; }
       const blob = new Blob(chunks, { type: chosenMime });
-      if (blob.size < 800) return;
+      console.log("[stt] sending to STT, size:", blob.size, "mime:", chosenMime);
+      if (blob.size < 800) { console.log("[stt] blob too small, skip"); return; }
       try {
         const res = await fetch("/api/stt", {
           method: "POST",
@@ -587,18 +616,24 @@ export default function Home() {
           body: await blob.arrayBuffer(),
         });
         const data = await res.json();
+        console.log("[stt] API response:", JSON.stringify(data));
         const transcript = data.transcript?.trim();
         if (transcript && !isMutedRef.current && !speakingRef.current && !speakingCooldownRef.current) {
+          console.log("[stt] accepted:", transcript);
           handleUserMessageRef.current(transcript, "voice");
+        } else if (transcript) {
+          console.log("[stt] rejected — muted:", isMutedRef.current, "speaking:", speakingRef.current);
         }
-      } catch (e) { console.error("[stt]", e); }
+      } catch (e) { console.error("[stt] fetch error:", e); }
     };
 
     const init = async () => {
       try {
+        console.log("[stt] requesting mic...");
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
+        console.log("[stt] mic granted, tracks:", micStream.getAudioTracks().length);
         mediaStreamRef.current = micStream;
         micDeniedRef.current = false;
 
@@ -616,12 +651,14 @@ export default function Home() {
         setTimeout(() => {
           analyser.getByteFrequencyData(freqBuf);
           const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
-          noiseFloor = avg + 8; // threshold = ambient + margin
+          noiseFloor = avg + 10;
+          console.log("[stt] noise floor calibrated:", noiseFloor.toFixed(1), "(ambient:", avg.toFixed(1), ")");
         }, 500);
 
         chosenMime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
           : MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
           : "audio/webm";
+        console.log("[stt] mime:", chosenMime);
 
         recorder = new MediaRecorder(micStream, { mimeType: chosenMime });
         mediaRecorderRef.current = recorder;
@@ -632,6 +669,7 @@ export default function Home() {
 
         recorder.onstop = () => {
           const captured = [...audioChunksRef.current];
+          console.log("[stt] recorder stopped, chunks:", captured.length, "size:", captured.reduce((s, b) => s + b.size, 0));
           audioChunksRef.current = [];
           if (!speakingRef.current && !speakingCooldownRef.current) sendToSTT(captured);
           if (!stopped && !speakingRef.current && !speakingCooldownRef.current) {
@@ -642,6 +680,7 @@ export default function Home() {
         startRec();
 
         // VAD with adaptive noise floor
+        let vadLogCount = 0;
         vadInterval = setInterval(() => {
           if (speakingRef.current || speakingCooldownRef.current) {
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
@@ -649,6 +688,7 @@ export default function Home() {
           }
           analyser.getByteFrequencyData(freqBuf);
           const avg = freqBuf.reduce((s, v) => s + v, 0) / freqBuf.length;
+          if (++vadLogCount % 25 === 0) console.log("[stt] VAD:", avg.toFixed(1), "floor:", noiseFloor.toFixed(1), "rec:", recorder?.state, "chunks:", audioChunksRef.current.length);
 
           if (avg > noiseFloor) {
             if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
@@ -888,6 +928,25 @@ export default function Home() {
       )}
 
       <canvas ref={canvasRef} style={{ display: "none" }} />
+
+      {/* Debug panel — enable with ?debug in URL */}
+      {debugMode && (
+        <div style={{
+          position: "absolute", top: 0, left: 0, right: 0, zIndex: 100,
+          maxHeight: "40vh", overflowY: "auto", padding: "6px 8px",
+          background: "rgba(0,0,0,0.9)", fontSize: 10, fontFamily: "monospace",
+          color: "#0f0", lineHeight: 1.4, pointerEvents: "auto",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ color: "#0f0", fontWeight: "bold" }}>STT DEBUG</span>
+            <button onClick={() => setDebugLogs([])} style={{ background: "none", border: "1px solid #0f0", color: "#0f0", fontSize: 9, padding: "1px 6px", cursor: "pointer", borderRadius: 3 }}>clear</button>
+          </div>
+          {debugLogs.map((log, i) => (
+            <div key={i} style={{ color: log.startsWith("ERR") ? "#f44" : log.startsWith("WARN") ? "#fa0" : "#0f0", wordBreak: "break-all" }}>{log}</div>
+          ))}
+          {debugLogs.length === 0 && <div style={{ color: "#555" }}>Waiting for STT events...</div>}
+        </div>
+      )}
     </div>
   );
 }
