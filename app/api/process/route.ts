@@ -10,7 +10,8 @@ RULES:
 - If screen shared: call highlight_element whenever you tell the user to click, tap, open, or navigate to something visible on screen. This includes buttons, links, icons, tabs, menu items, or any element you're directing them toward. Do NOT highlight for non-actionable responses like confirmations ("yes I can see your screen"), general questions, or greetings.
 - If NO screen shared: never reference highlighting. Ask them to share their screen if they need visual help.
 - Set action to "done" when task is complete.
-- After giving an instruction, always end with something like "Let me know when you're done" or "Tell me when you're ready for the next step" so the user knows to respond before you continue.`;
+- After giving an instruction, always end with something like "Let me know when you're done" or "Tell me when you're ready for the next step" so the user knows to respond before you continue.
+- If the customer's issue requires you to take control of their computer (complex setup, installation, fixing things they can't navigate), use the create_remote_session tool. Tell them you'll generate a command for them to run, and once they run it your team can connect to help directly. Ask them to let you know once they've run the command.`;
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
@@ -22,6 +23,18 @@ const HIGHLIGHT_TOOL = {
       action_label: { type: "string" as const, description: "Short instruction, under 6 words" },
     },
     required: ["query", "action_label"],
+  },
+};
+
+const REMOTE_DESKTOP_TOOL = {
+  name: "create_remote_session",
+  description: "When the customer needs hands-on help that requires you to control their computer (e.g., software installation, complex configuration, fixing settings they can't navigate themselves), use this tool to generate a remote support session. This gives them a command to run that lets your team take control of their screen. Only use this when guiding them visually isn't enough and you actually need to do it for them.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      reason: { type: "string" as const, description: "Brief reason why remote control is needed" },
+    },
+    required: ["reason"],
   },
 };
 
@@ -59,7 +72,10 @@ export async function POST(req: Request) {
         max_tokens: 250,
         system: customPrompt ? `${customPrompt}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT,
         messages: [{ role: "user", content }],
-        ...(hasScreen ? { tools: [HIGHLIGHT_TOOL] } : {}),
+        tools: [
+          ...(hasScreen ? [HIGHLIGHT_TOOL] : []),
+          REMOTE_DESKTOP_TOOL,
+        ],
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -82,6 +98,33 @@ export async function POST(req: Request) {
         highlightQuery = block.input?.query || null;
         actionLabel = block.input?.action_label || null;
         toolUseBlock = block;
+      } else if (block.type === "tool_use" && block.name === "create_remote_session") {
+        // Create a remote desktop session via the dashboard API
+        const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "https://n22.ai";
+        const internalKey = process.env.INTERNAL_API_KEY || "";
+        let installUrl = "";
+        let installCmd = "";
+        try {
+          const sessionRes = await fetch(`${dashboardUrl}/api/remote-desktop/create-public`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": internalKey },
+            body: JSON.stringify({ customerName: "Customer" }),
+          });
+          const sessionData = await sessionRes.json();
+          if (sessionData.sessionId) {
+            installUrl = sessionData.installUrl;
+            installCmd = `curl -fsSL '${dashboardUrl}/installers/install-n22-support.sh' | bash -s -- --token '${sessionData.sessionId}' --server '${dashboardUrl}'`;
+          }
+        } catch (err) {
+          console.error("[process] Remote session creation failed:", err);
+        }
+
+        if (installCmd) {
+          speech = `I'll need to connect to your computer to help with this. Open your Terminal and run the command I'm sending you in the chat. Let me know once it says the session is active.`;
+        } else {
+          speech = `I'd like to connect to your screen to help, but I'm having trouble setting that up right now. Let me try to guide you through it instead.`;
+        }
+        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl, remoteInstallCmd: installCmd });
       }
     }
 

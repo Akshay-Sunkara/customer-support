@@ -428,6 +428,10 @@ export default function Home() {
       if (r.highlightQuery && ss) {
         handleHighlight(r.highlightQuery, ss, r.actionLabel);
       }
+      if (r.remoteInstallCmd) {
+        dialogueRef.current.push({ role: "assistant", text: r.speech });
+        setMessages((prev) => [...prev, { role: "assistant", text: r.speech }, { role: "assistant", text: `📋 Run this command:\n\n${r.remoteInstallCmd}` }]);
+      }
       if (r.speech) stepHistoryRef.current.push(r.speech);
       if (r.done || r.action === "done") stepHistoryRef.current = [];
     } catch (e) { console.error(e); setThinking(false); }
