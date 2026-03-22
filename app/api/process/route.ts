@@ -121,7 +121,7 @@ export async function POST(req: Request) {
         const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "https://n22.ai";
         const internalKey = process.env.INTERNAL_API_KEY || "";
         let installUrl = "";
-        let installCmd = "";
+        let remoteSessionId = "";
         try {
           const sessionRes = await fetch(`${dashboardUrl}/api/remote-desktop/create-public`, {
             method: "POST",
@@ -131,7 +131,7 @@ export async function POST(req: Request) {
           const sessionData = await sessionRes.json();
           if (sessionData.sessionId) {
             installUrl = sessionData.installUrl;
-            installCmd = `curl -fsSL '${dashboardUrl}/installers/install-n22-support.sh' | bash -s -- --token '${sessionData.sessionId}' --server '${dashboardUrl}'`;
+            remoteSessionId = sessionData.sessionId;
           }
         } catch (err) {
           console.error("[process] Remote session creation failed:", err);
@@ -142,7 +142,7 @@ export async function POST(req: Request) {
         } else {
           speech = `I'd like to connect to your screen to help, but I'm having trouble setting that up right now. Let me try to guide you through it instead.`;
         }
-        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl, remoteSessionId: sessionData?.sessionId });
+        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl, remoteSessionId });
       } else if (block.type === "tool_use" && block.name === "start_cua_agent") {
         // Start the CUA agent for the active session
         const cuaTask = block.input?.task || "Help the customer with their issue";
