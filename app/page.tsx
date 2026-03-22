@@ -426,15 +426,18 @@ export default function Home() {
       const r = await processMessage(text, false, ss);
       setThinking(false);
       if (!r) { processingRef.current = false; return; }
-      if (r.speech) speak(r.speech);
-      if (r.highlightQuery && ss) {
-        handleHighlight(r.highlightQuery, ss, r.actionLabel);
-      }
       if (r.remoteInstallCmd) {
-        dialogueRef.current.push({ role: "ceres", text: r.speech });
-        setMessages((prev) => [...prev, { role: "ceres", text: r.speech }, { role: "ceres", text: `Run this command:\n\n${r.remoteInstallCmd}` }]);
+        const combined = `${r.speech}\n\nRun this command: ${r.remoteInstallCmd}`;
+        dialogueRef.current.push({ role: "ceres", text: combined });
+        setMessages((prev) => [...prev, { role: "ceres", text: combined }]);
+        if (r.speech) stepHistoryRef.current.push(r.speech);
+      } else {
+        if (r.speech) speak(r.speech);
+        if (r.highlightQuery && ss) {
+          handleHighlight(r.highlightQuery, ss, r.actionLabel);
+        }
+        if (r.speech) stepHistoryRef.current.push(r.speech);
       }
-      if (r.speech) stepHistoryRef.current.push(r.speech);
       if (r.done || r.action === "done") stepHistoryRef.current = [];
     } catch (e) { console.error(e); setThinking(false); }
     processingRef.current = false;
