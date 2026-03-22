@@ -11,7 +11,8 @@ RULES:
 - If NO screen shared: never reference highlighting. Ask them to share their screen if they need visual help.
 - Set action to "done" when task is complete.
 - After giving an instruction, always end with something like "Let me know when you're done" or "Tell me when you're ready for the next step" so the user knows to respond before you continue.
-- If the customer's issue requires you to take control of their computer (complex setup, installation, fixing things they can't navigate), use the create_remote_session tool. Tell them you'll generate a command for them to run, and once they run it your team can connect to help directly. Ask them to let you know once they've run the command.`;
+- If the customer asks for remote access, remote control, remote help, or says they want someone to connect to their computer — IMMEDIATELY use the create_remote_session tool. Do not ask follow-up questions first.
+- Also use create_remote_session for complex setup, installation, or fixing things they can't navigate on their own.`;
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
