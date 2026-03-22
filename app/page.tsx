@@ -429,8 +429,8 @@ export default function Home() {
         handleHighlight(r.highlightQuery, ss, r.actionLabel);
       }
       if (r.remoteInstallCmd) {
-        dialogueRef.current.push({ role: "assistant", text: r.speech });
-        setMessages((prev) => [...prev, { role: "assistant", text: r.speech }, { role: "assistant", text: `📋 Run this command:\n\n${r.remoteInstallCmd}` }]);
+        dialogueRef.current.push({ role: "ceres", text: r.speech });
+        setMessages((prev) => [...prev, { role: "ceres", text: r.speech }, { role: "ceres", text: `Run this command:\n\n${r.remoteInstallCmd}` }]);
       }
       if (r.speech) stepHistoryRef.current.push(r.speech);
       if (r.done || r.action === "done") stepHistoryRef.current = [];
