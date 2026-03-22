@@ -81,12 +81,14 @@ export default function Home() {
   const chatOpenRef = useRef(false);
   const handleUserMessageRef = useRef<(t: string, s?: "voice" | "chat") => void>(() => {});
   const customPromptRef = useRef<string | null>(null);
+  const roomIdRef = useRef<string | null>(null);
 
   // Load custom prompt from ?room= param
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomId = params.get("room");
     if (roomId) {
+      roomIdRef.current = roomId;
       const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "http://localhost:3000";
       fetch(`${dashboardUrl}/api/avatar/room?id=${encodeURIComponent(roomId)}`)
         .then(r => r.json())
@@ -387,7 +389,7 @@ export default function Home() {
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current }) });
     return res.json();
   }, [captureFrame]);
 

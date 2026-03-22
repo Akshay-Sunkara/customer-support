@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ speech: "Connection issue.", action: "none", done: false });
   }
 
-  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt } = await req.json();
+  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId } = await req.json();
   const hasScreen = !!screenshot;
 
   // Build content — minimal context
@@ -108,7 +108,7 @@ export async function POST(req: Request) {
           const sessionRes = await fetch(`${dashboardUrl}/api/remote-desktop/create-public`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": internalKey },
-            body: JSON.stringify({ customerName: "Customer" }),
+            body: JSON.stringify({ customerName: "Customer", roomId }),
           });
           const sessionData = await sessionRes.json();
           if (sessionData.sessionId) {
