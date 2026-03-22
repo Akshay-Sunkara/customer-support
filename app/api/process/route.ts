@@ -12,7 +12,11 @@ RULES:
 - Set action to "done" when task is complete.
 - After giving an instruction, always end with something like "Let me know when you're done" or "Tell me when you're ready for the next step" so the user knows to respond before you continue.
 - If the customer asks for remote access, remote control, remote help, or says they want someone to connect to their computer — IMMEDIATELY use the create_remote_session tool. Do not ask follow-up questions first.
-- Also use create_remote_session for complex setup, installation, or fixing things they can't navigate on their own.`;
+- Also use create_remote_session for complex setup, installation, or fixing things they can't navigate on their own.
+- If the customer says "session is active", "it's active", "session active", "it says session active", "connected", or similar confirmation that the remote support tool is running — use the start_cua_agent tool immediately.
+- While the CUA agent is running, if you receive CUA narration updates, relay them naturally to the customer (e.g. "I'm now opening your settings...").`;
+
+const CUA_SERVER = process.env.CUA_SERVER_URL || "http://localhost:8420";
 
 const HIGHLIGHT_TOOL = {
   name: "highlight_element",
@@ -39,13 +43,25 @@ const REMOTE_DESKTOP_TOOL = {
   },
 };
 
+const START_CUA_TOOL = {
+  name: "start_cua_agent",
+  description: "Start the AI agent to remotely control the customer's computer. Use this when the customer confirms their remote support session is active (e.g. 'session is active', 'it's connected', 'it says session active'). The agent will automatically connect and begin performing the task.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      task: { type: "string" as const, description: "What the agent should do on the customer's computer" },
+    },
+    required: ["task"],
+  },
+};
+
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ speech: "Connection issue.", action: "none", done: false });
   }
 
-  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId } = await req.json();
+  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId, activeSessionId } = await req.json();
   const hasScreen = !!screenshot;
 
   // Build content — minimal context
@@ -76,6 +92,7 @@ export async function POST(req: Request) {
         tools: [
           ...(hasScreen ? [HIGHLIGHT_TOOL] : []),
           REMOTE_DESKTOP_TOOL,
+          ...(activeSessionId ? [START_CUA_TOOL] : []),
         ],
       }),
       signal: AbortSignal.timeout(15000),
@@ -125,7 +142,48 @@ export async function POST(req: Request) {
         } else {
           speech = `I'd like to connect to your screen to help, but I'm having trouble setting that up right now. Let me try to guide you through it instead.`;
         }
-        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl });
+        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl, remoteSessionId: sessionData?.sessionId });
+      } else if (block.type === "tool_use" && block.name === "start_cua_agent") {
+        // Start the CUA agent for the active session
+        const cuaTask = block.input?.task || "Help the customer with their issue";
+        const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "https://n22.ai";
+        const internalKey = process.env.INTERNAL_API_KEY || "";
+
+        try {
+          // Get device credentials from the dashboard
+          // We need to fetch session info to get deviceId and password
+          const sessionRes = await fetch(`${dashboardUrl}/api/remote-desktop/connect-public`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": internalKey },
+            body: JSON.stringify({ sessionId: activeSessionId }),
+          });
+          const sessionData = await sessionRes.json();
+
+          if (sessionData.deviceId && sessionData.password) {
+            // Start CUA
+            const cuaRes = await fetch(`${CUA_SERVER}/start`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId: activeSessionId,
+                deviceId: sessionData.deviceId,
+                password: sessionData.password,
+                task: cuaTask,
+              }),
+            });
+            const cuaData = await cuaRes.json();
+
+            if (cuaData.status === "started" || cuaData.status === "already_running") {
+              speech = `I now have access to your computer. I'm going to ${cuaTask.toLowerCase()}. I'll walk you through everything I'm doing.`;
+              return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, cuaStarted: true, cuaSessionId: activeSessionId });
+            }
+          }
+        } catch (err) {
+          console.error("[process] CUA start failed:", err);
+        }
+
+        speech = "I'm having trouble connecting to your computer. Can you confirm the session is still active?";
+        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null });
       }
     }
 

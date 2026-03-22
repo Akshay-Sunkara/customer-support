@@ -23,6 +23,9 @@ export default function Home() {
   const [showControls, setShowControls] = useState(true);
   const [showWait, setShowWait] = useState(false);
   const [isEmbed, setIsEmbed] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [cuaRunning, setCuaRunning] = useState(false);
+  const cuaPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const debugRef = useRef(false);
@@ -389,7 +392,7 @@ export default function Home() {
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId }) });
     return res.json();
   }, [captureFrame]);
 
@@ -429,7 +432,7 @@ export default function Home() {
       if (r.remoteInstallUrl) {
         dialogueRef.current.push({ role: "ceres", text: r.speech });
         setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
-        // Speak without adding to messages (speak() would duplicate)
+        if (r.remoteSessionId) setActiveSessionId(r.remoteSessionId);
         if (r.speech) {
           fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
             .then(res => res.blob())
@@ -437,6 +440,19 @@ export default function Home() {
             .catch(() => {});
           stepHistoryRef.current.push(r.speech);
         }
+      } else if (r.cuaStarted) {
+        // CUA agent started — begin polling for narration
+        dialogueRef.current.push({ role: "ceres", text: r.speech });
+        setMessages((prev) => [...prev, { role: "ceres", text: r.speech }]);
+        setCuaRunning(true);
+        if (r.speech) {
+          fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
+            .then(res => res.blob())
+            .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
+            .catch(() => {});
+        }
+        // Start polling CUA actions
+        startCuaPolling(r.cuaSessionId || activeSessionId);
       } else {
         if (r.speech) speak(r.speech);
         if (r.highlightQuery && ss) {
@@ -447,7 +463,42 @@ export default function Home() {
       if (r.done || r.action === "done") stepHistoryRef.current = [];
     } catch (e) { console.error(e); setThinking(false); }
     processingRef.current = false;
-  }, [processMessage, speak, captureFrame, handleHighlight]);
+  }, [processMessage, speak, captureFrame, handleHighlight, activeSessionId]);
+
+  // ── CUA Polling ──
+  const startCuaPolling = useCallback((sessionId: string | null) => {
+    if (!sessionId) return;
+    if (cuaPollingRef.current) clearInterval(cuaPollingRef.current);
+    cuaPollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch("/api/cua", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "actions", sessionId }),
+        });
+        const data = await res.json();
+        if (data.actions?.length > 0) {
+          // Speak the most recent narration and add all to chat
+          for (const action of data.actions) {
+            setMessages((prev) => [...prev, { role: "ceres", text: `[Agent] ${action}` }]);
+            dialogueRef.current.push({ role: "ceres", text: action });
+          }
+          // Speak only the last one to avoid TTS queue buildup
+          const lastAction = data.actions[data.actions.length - 1];
+          if (lastAction && !lastAction.startsWith("Clicking") && !lastAction.startsWith("Moving") && !lastAction.startsWith("Pressing")) {
+            fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: lastAction }) })
+              .then(r => r.blob())
+              .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
+              .catch(() => {});
+          }
+        }
+        if (data.status === "completed" || data.status === "error" || data.status === "stopped") {
+          setCuaRunning(false);
+          if (cuaPollingRef.current) clearInterval(cuaPollingRef.current);
+        }
+      } catch {}
+    }, 3000);
+  }, []);
 
   useEffect(() => { handleUserMessageRef.current = handleUserMessage; }, [handleUserMessage]);
 
@@ -522,6 +573,14 @@ export default function Home() {
 
   const endSession = useCallback(() => {
     if (phase === "ending" || phase === "ended") return;
+
+    // ── Stop CUA agent if running ──
+    if (cuaPollingRef.current) { clearInterval(cuaPollingRef.current); cuaPollingRef.current = null; }
+    if (activeSessionId) {
+      fetch("/api/cua/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: activeSessionId }) }).catch(() => {});
+      setActiveSessionId(null);
+      setCuaRunning(false);
+    }
 
     // ── Kill all audio ──
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current.src = ""; currentAudioRef.current = null; }
