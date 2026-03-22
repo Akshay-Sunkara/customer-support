@@ -3,7 +3,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 
 type Annotation = { id: number; screenshot: string; cx: number; cy: number; label: string };
-type Msg = { role: "user" | "ceres"; text: string; annotation?: { screenshot: string; cx: number; cy: number; label: string } };
+type Msg = { role: "user" | "ceres"; text: string; annotation?: { screenshot: string; cx: number; cy: number; label: string }; remoteInstallUrl?: string };
 
 const BAR_COUNT = 40;
 const BAR_W = 4;
@@ -427,10 +427,16 @@ export default function Home() {
       setThinking(false);
       if (!r) { processingRef.current = false; return; }
       if (r.remoteInstallUrl) {
-        const combined = `${r.speech}\n\nDownload here: ${r.remoteInstallUrl}`;
-        dialogueRef.current.push({ role: "ceres", text: combined });
-        setMessages((prev) => [...prev, { role: "ceres", text: combined }]);
-        if (r.speech) stepHistoryRef.current.push(r.speech);
+        dialogueRef.current.push({ role: "ceres", text: r.speech });
+        setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
+        // Speak without adding to messages (speak() would duplicate)
+        if (r.speech) {
+          fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
+            .then(res => res.blob())
+            .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
+            .catch(() => {});
+          stepHistoryRef.current.push(r.speech);
+        }
       } else {
         if (r.speech) speak(r.speech);
         if (r.highlightQuery && ss) {
@@ -1010,6 +1016,40 @@ export default function Home() {
                     <p style={{ fontSize: isEmbed ? 12.5 : 13.5, lineHeight: 1.5, color: msg.role === "user" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 400 }}>
                       {msg.text}
                     </p>
+                    {msg.remoteInstallUrl && (
+                      <a
+                        href={msg.remoteInstallUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          marginTop: 10,
+                          padding: "10px 18px",
+                          borderRadius: 10,
+                          background: "rgba(255,255,255,0.08)",
+                          color: "rgba(255,255,255,0.85)",
+                          fontSize: 12.5,
+                          fontWeight: 600,
+                          textDecoration: "none",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          letterSpacing: "0.01em",
+                          transition: "all 0.2s ease",
+                          cursor: "pointer",
+                          backdropFilter: "blur(8px)",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.14)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        Download Support Tool
+                      </a>
+                    )}
                     {msg.annotation && (
                       <div style={{ marginTop: 6, borderRadius: 4, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
                         <CursorOverlay screenshot={msg.annotation.screenshot} cx={msg.annotation.cx} cy={msg.annotation.cy} />
