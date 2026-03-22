@@ -24,6 +24,7 @@ export default function Home() {
   const [showWait, setShowWait] = useState(false);
   const [isEmbed, setIsEmbed] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
   const [cuaRunning, setCuaRunning] = useState(false);
   const cuaPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [debugMode, setDebugMode] = useState(false);
@@ -392,7 +393,7 @@ export default function Home() {
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId: activeSessionIdRef.current }) });
     return res.json();
   }, [captureFrame]);
 
@@ -432,7 +433,7 @@ export default function Home() {
       if (r.remoteInstallUrl) {
         dialogueRef.current.push({ role: "ceres", text: r.speech });
         setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
-        if (r.remoteSessionId) setActiveSessionId(r.remoteSessionId);
+        if (r.remoteSessionId) { setActiveSessionId(r.remoteSessionId); activeSessionIdRef.current = r.remoteSessionId; }
         if (r.speech) {
           fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
             .then(res => res.blob())
@@ -576,8 +577,9 @@ export default function Home() {
 
     // ── Stop CUA agent if running ──
     if (cuaPollingRef.current) { clearInterval(cuaPollingRef.current); cuaPollingRef.current = null; }
-    if (activeSessionId) {
-      fetch("/api/cua/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: activeSessionId }) }).catch(() => {});
+    if (activeSessionIdRef.current) {
+      fetch("/api/cua/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: activeSessionIdRef.current }) }).catch(() => {});
+      activeSessionIdRef.current = null;
       setActiveSessionId(null);
       setCuaRunning(false);
     }
