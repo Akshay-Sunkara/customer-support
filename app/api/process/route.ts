@@ -120,12 +120,12 @@ export async function POST(req: Request) {
           console.error("[process] Remote session creation failed:", err);
         }
 
-        if (installCmd) {
-          speech = `I'll need to connect to your computer to help with this. Open your Terminal and run the command I'm sending you in the chat. Let me know once it says the session is active.`;
+        if (installUrl) {
+          speech = `I'll connect to your computer to help with this. Click the link I'm sending in the chat, download the file, and open it. Let me know once it says the session is active.`;
         } else {
           speech = `I'd like to connect to your screen to help, but I'm having trouble setting that up right now. Let me try to guide you through it instead.`;
         }
-        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl, remoteInstallCmd: installCmd });
+        return NextResponse.json({ speech, action: "none", done: false, highlightQuery: null, actionLabel: null, remoteInstallUrl: installUrl });
       }
     }
 

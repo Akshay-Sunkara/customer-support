@@ -426,8 +426,8 @@ export default function Home() {
       const r = await processMessage(text, false, ss);
       setThinking(false);
       if (!r) { processingRef.current = false; return; }
-      if (r.remoteInstallCmd) {
-        const combined = `${r.speech}\n\nRun this command: ${r.remoteInstallCmd}`;
+      if (r.remoteInstallUrl) {
+        const combined = `${r.speech}\n\nDownload here: ${r.remoteInstallUrl}`;
         dialogueRef.current.push({ role: "ceres", text: combined });
         setMessages((prev) => [...prev, { role: "ceres", text: combined }]);
         if (r.speech) stepHistoryRef.current.push(r.speech);
