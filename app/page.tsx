@@ -355,6 +355,44 @@ export default function Home() {
     }
   }, []);
 
+  // ── TTS without adding to messages (for cases where message is already added with extra data like remoteInstallUrl) ──
+  const speakRaw = useCallback(async (text: string) => {
+    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
+    try {
+      const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      currentAudioRef.current = audio;
+      speakingRef.current = true;
+      setSpeaking(true);
+
+      // Connect to AudioContext for waveform
+      if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+        audioCtxRef.current = new AudioContext();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") await ctx.resume();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+      const source = ctx.createMediaElementSource(audio);
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+      sourceNodeRef.current = source;
+
+      audio.onended = () => {
+        speakingRef.current = false;
+        setSpeaking(false);
+        currentAudioRef.current = null;
+      };
+      audio.play().catch(() => {});
+    } catch {
+      speakingRef.current = false;
+      setSpeaking(false);
+    }
+  }, []);
+
   // ── Capture helpers ──
   const captureFrame = useCallback((): string | null => {
     if (!sharingRef.current) return null;
@@ -439,14 +477,7 @@ export default function Home() {
         setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
         dialogueRef.current.push({ role: "ceres", text: r.speech });
         if (r.speech) {
-          // Use speak-like TTS but don't double-add to messages
-          fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
-            .then(res => res.blob())
-            .then(blob => {
-              const a = new Audio(URL.createObjectURL(blob));
-              a.play();
-            })
-            .catch(() => {});
+          speakRaw(r.speech);
           stepHistoryRef.current.push(r.speech);
         }
       } else if (r.cuaStarted) {
@@ -484,8 +515,8 @@ export default function Home() {
             !a.startsWith("Pressing") && !a.startsWith("Scrolling") &&
             !a.startsWith("Taking screenshot") && !a.startsWith("Waiting")
           );
-          // Speak the last meaningful one — speak() handles adding to messages
-          if (meaningful.length > 0) {
+          // Speak the last meaningful one — but only if not already speaking
+          if (meaningful.length > 0 && !speakingRef.current) {
             speak(meaningful[meaningful.length - 1]);
           }
         }
@@ -1000,6 +1031,27 @@ export default function Home() {
               Let N22 finish speaking
             </div>
           )}
+
+          {/* CUA active indicator */}
+          {cuaRunning && (
+            <div style={{
+              position: "absolute", top: 20, left: "50%", transform: "translateX(-50%)",
+              zIndex: 30, display: "flex", alignItems: "center", gap: 8,
+              padding: "7px 16px", borderRadius: 999,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(16px)",
+              fontFamily: "-apple-system, 'Helvetica Neue', sans-serif",
+            }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", background: "#4ade80",
+                animation: "cua-pulse 2s ease-in-out infinite",
+              }} />
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                Agent active
+              </span>
+            </div>
+          )}
+          <style>{`@keyframes cua-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
 
           {/* ── Controls pill ── */}
           <div style={{
