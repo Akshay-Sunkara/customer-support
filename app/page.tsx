@@ -86,11 +86,13 @@ export default function Home() {
   const handleUserMessageRef = useRef<(t: string, s?: "voice" | "chat") => void>(() => {});
   const customPromptRef = useRef<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
+  const remoteModeRef = useRef(false);
 
-  // Load custom prompt from ?room= param
+  // Load custom prompt from ?room= param and check ?mode=remote
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomId = params.get("room");
+    if (params.get("mode") === "remote") remoteModeRef.current = true;
     if (roomId) {
       roomIdRef.current = roomId;
       const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "http://localhost:3000";
@@ -431,28 +433,25 @@ export default function Home() {
       setThinking(false);
       if (!r) { processingRef.current = false; return; }
       if (r.remoteInstallUrl) {
-        dialogueRef.current.push({ role: "ceres", text: r.speech });
-        setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
         if (r.remoteSessionId) { setActiveSessionId(r.remoteSessionId); activeSessionIdRef.current = r.remoteSessionId; }
+        // speak() adds to dialogueRef + messages, but we need the install URL on the message
+        // So add the message manually WITH the URL, then speak without adding again
+        setMessages((prev) => [...prev, { role: "ceres", text: r.speech, remoteInstallUrl: r.remoteInstallUrl }]);
+        dialogueRef.current.push({ role: "ceres", text: r.speech });
         if (r.speech) {
+          // Use speak-like TTS but don't double-add to messages
           fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
             .then(res => res.blob())
-            .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
+            .then(blob => {
+              const a = new Audio(URL.createObjectURL(blob));
+              a.play();
+            })
             .catch(() => {});
           stepHistoryRef.current.push(r.speech);
         }
       } else if (r.cuaStarted) {
-        // CUA agent started — begin polling for narration
-        dialogueRef.current.push({ role: "ceres", text: r.speech });
-        setMessages((prev) => [...prev, { role: "ceres", text: r.speech }]);
         setCuaRunning(true);
-        if (r.speech) {
-          fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: r.speech }) })
-            .then(res => res.blob())
-            .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
-            .catch(() => {});
-        }
-        // Start polling CUA actions
+        if (r.speech) speak(r.speech);
         startCuaPolling(r.cuaSessionId || activeSessionId);
       } else {
         if (r.speech) speak(r.speech);
@@ -479,18 +478,14 @@ export default function Home() {
         });
         const data = await res.json();
         if (data.actions?.length > 0) {
-          // Speak the most recent narration and add all to chat
+          // Add all actions to chat display only (not dialogueRef to avoid polluting context)
           for (const action of data.actions) {
             setMessages((prev) => [...prev, { role: "ceres", text: `[Agent] ${action}` }]);
-            dialogueRef.current.push({ role: "ceres", text: action });
           }
-          // Speak only the last one to avoid TTS queue buildup
+          // Speak only the last meaningful narration (skip low-level actions)
           const lastAction = data.actions[data.actions.length - 1];
-          if (lastAction && !lastAction.startsWith("Clicking") && !lastAction.startsWith("Moving") && !lastAction.startsWith("Pressing")) {
-            fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: lastAction }) })
-              .then(r => r.blob())
-              .then(blob => { const a = new Audio(URL.createObjectURL(blob)); a.play(); })
-              .catch(() => {});
+          if (lastAction && !lastAction.startsWith("Clicking") && !lastAction.startsWith("Moving") && !lastAction.startsWith("Pressing") && !lastAction.startsWith("Scrolling") && !lastAction.startsWith("Taking screenshot")) {
+            speak(lastAction);
           }
         }
         if (data.status === "completed" || data.status === "error" || data.status === "stopped") {
@@ -557,13 +552,28 @@ export default function Home() {
     if (introRanRef.current) return;
     introRanRef.current = true;
 
-    // Speak instant greeting while Claude generates a custom intro in the background
     const defaultGreeting = "Hey, I'll be your customer support agent today. Let's get started, what's your issue?";
 
-    if (customPromptRef.current) {
+    if (remoteModeRef.current) {
+      // Remote access mode — intro + auto-create session immediately
+      const remoteGreeting = "Hi, I'm your support agent. I'll need to connect to your computer to help you. Download and open the tool below.";
+      speak(remoteGreeting);
+      // Auto-trigger remote session creation
+      fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ screenshot: null, userMessage: "[Customer needs remote access support. Create the remote session immediately.]", userName: "", dialogue: [], stepHistory: [], isFollowUp: false, customPrompt: customPromptRef.current, roomId: roomIdRef.current }) })
+        .then(r => r.json())
+        .then(data => {
+          if (data.remoteInstallUrl) {
+            if (data.remoteSessionId) { setActiveSessionId(data.remoteSessionId); activeSessionIdRef.current = data.remoteSessionId; }
+            setMessages((prev) => [...prev, { role: "ceres", text: "Download and open the support tool below.", remoteInstallUrl: data.remoteInstallUrl }]);
+            dialogueRef.current.push({ role: "ceres", text: "Download and open the support tool." });
+          }
+        })
+        .catch(() => {});
+    } else if (customPromptRef.current) {
       setThinking(true);
       fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ screenshot:null, userMessage:"[Conversation just started. Introduce yourself based on your system prompt. Keep it to 1 sentence max.]", userName:"", dialogue:[], stepHistory:[], isFollowUp:false, customPrompt: customPromptRef.current }) })
+        body: JSON.stringify({ screenshot: null, userMessage: "[Conversation just started. Introduce yourself based on your system prompt. Keep it to 1 sentence max.]", userName: "", dialogue: [], stepHistory: [], isFollowUp: false, customPrompt: customPromptRef.current }) })
         .then(r => r.json())
         .then(data => { setThinking(false); if (data.speech) speak(data.speech); })
         .catch(() => { setThinking(false); speak(defaultGreeting); });
