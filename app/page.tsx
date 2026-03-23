@@ -1085,30 +1085,28 @@ export default function Home() {
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
-                          gap: 8,
-                          marginTop: 10,
-                          padding: "10px 18px",
-                          borderRadius: 10,
-                          background: "rgba(255,255,255,0.08)",
-                          color: "rgba(255,255,255,0.85)",
-                          fontSize: 12.5,
-                          fontWeight: 600,
+                          gap: 6,
+                          marginTop: 14,
+                          padding: "8px 16px",
+                          borderRadius: 8,
+                          background: "rgba(255,255,255,0.06)",
+                          color: "rgba(255,255,255,0.55)",
+                          fontSize: 12,
+                          fontWeight: 400,
                           textDecoration: "none",
-                          border: "1px solid rgba(255,255,255,0.1)",
-                          letterSpacing: "0.01em",
+                          border: "1px solid rgba(255,255,255,0.07)",
+                          letterSpacing: "-0.01em",
                           transition: "all 0.2s ease",
                           cursor: "pointer",
-                          backdropFilter: "blur(8px)",
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.14)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.8)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.55)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; }}
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
                           <polyline points="7 10 12 15 17 10" />
                           <line x1="12" y1="15" x2="12" y2="3" />
                         </svg>
-                        Download Support Tool
+                        Download
                       </a>
                     )}
                     {msg.annotation && (
