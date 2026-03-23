@@ -26,6 +26,8 @@ export default function Home() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const [cuaRunning, setCuaRunning] = useState(false);
+  const [assistMode, setAssistMode] = useState<"guide" | "remote">("guide");
+  const assistModeRef = useRef<"guide" | "remote">("guide");
   const cuaPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -433,7 +435,7 @@ export default function Home() {
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId: activeSessionIdRef.current, remoteMode: remoteModeRef.current }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId: activeSessionIdRef.current, remoteMode: remoteModeRef.current, assistMode: assistModeRef.current }) });
     return res.json();
   }, [captureFrame]);
 
@@ -1078,6 +1080,35 @@ export default function Home() {
               <Btn on={chatOpen} color="rgba(255,255,255,0.15)" click={() => setChatOpen(o=>{ if (!o) setAnnotations([]); return !o; })}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </Btn>
+              {remoteModeRef.current && (
+                <>
+                  <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.06)", margin: "0 2px" }} />
+                  <div style={{
+                    display: "flex", alignItems: "center",
+                    padding: 3, borderRadius: 10,
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.05)",
+                  }}>
+                    {(["guide", "remote"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => { setAssistMode(mode); assistModeRef.current = mode; }}
+                        style={{
+                          padding: "5px 12px", borderRadius: 8, border: "none",
+                          background: assistMode === mode ? "rgba(255,255,255,0.1)" : "transparent",
+                          color: assistMode === mode ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.3)",
+                          fontSize: 10, fontWeight: 500, letterSpacing: "0.06em",
+                          textTransform: "uppercase" as const,
+                          cursor: "pointer", transition: "all 0.2s ease",
+                          fontFamily: "-apple-system, sans-serif",
+                        }}
+                      >
+                        {mode === "guide" ? "Guide" : "Remote"}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
               <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.1)", margin: "0 2px" }} />
               <button onClick={endSession} style={{
                 width: 42, height: 42, borderRadius: 11,

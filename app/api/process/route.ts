@@ -61,11 +61,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ speech: "Connection issue.", action: "none", done: false });
   }
 
-  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId, activeSessionId, remoteMode } = await req.json();
+  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId, activeSessionId, remoteMode, assistMode } = await req.json();
   const hasScreen = !!screenshot;
 
-  // Remote mode: if no session yet and this is a real user message, auto-create remote session
-  if (remoteMode && !activeSessionId && dialogue?.length >= 1) {
+  // Remote mode: if toggle set to "remote", no session yet, and this is a real user message
+  if (remoteMode && assistMode === "remote" && !activeSessionId && dialogue?.length >= 1) {
     const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "https://n22.ai";
     const internalKey = process.env.INTERNAL_API_KEY || "";
     let installUrl = "";
