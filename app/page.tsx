@@ -451,12 +451,8 @@ export default function Home() {
         }
       } else if (r.cuaStarted) {
         setCuaRunning(true);
-        if (r.speech) speak(r.speech);
-        // Delay polling start so the initial narration from CUA queue gets drained
-        // (avoids duplicate of the "I now have access" message)
-        setTimeout(() => {
-          startCuaPolling(r.cuaSessionId || activeSessionId);
-        }, 5000);
+        // Don't speak here — let CUA polling handle all narration to avoid duplicates
+        startCuaPolling(r.cuaSessionId || activeSessionId);
       } else {
         if (r.speech) speak(r.speech);
         if (r.highlightQuery && ss) {
@@ -482,14 +478,15 @@ export default function Home() {
         });
         const data = await res.json();
         if (data.actions?.length > 0) {
-          // Add all actions to chat display only (not dialogueRef to avoid polluting context)
-          for (const action of data.actions) {
-            setMessages((prev) => [...prev, { role: "ceres", text: `[Agent] ${action}` }]);
-          }
-          // Speak only the last meaningful narration (skip low-level actions)
-          const lastAction = data.actions[data.actions.length - 1];
-          if (lastAction && !lastAction.startsWith("Clicking") && !lastAction.startsWith("Moving") && !lastAction.startsWith("Pressing") && !lastAction.startsWith("Scrolling") && !lastAction.startsWith("Taking screenshot")) {
-            speak(lastAction);
+          // Find the last meaningful narration to speak (skip low-level actions)
+          const meaningful = data.actions.filter((a: string) =>
+            !a.startsWith("Clicking") && !a.startsWith("Moving") &&
+            !a.startsWith("Pressing") && !a.startsWith("Scrolling") &&
+            !a.startsWith("Taking screenshot") && !a.startsWith("Waiting")
+          );
+          // Speak the last meaningful one — speak() handles adding to messages
+          if (meaningful.length > 0) {
+            speak(meaningful[meaningful.length - 1]);
           }
         }
         if (data.status === "completed" || data.status === "error" || data.status === "stopped") {
