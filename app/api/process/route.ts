@@ -61,8 +61,38 @@ export async function POST(req: Request) {
     return NextResponse.json({ speech: "Connection issue.", action: "none", done: false });
   }
 
-  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId, activeSessionId } = await req.json();
+  const { screenshot, userMessage, dialogue, stepHistory, isFollowUp, customPrompt, roomId, activeSessionId, remoteMode } = await req.json();
   const hasScreen = !!screenshot;
+
+  // Remote mode: if no session yet and this is a real user message, auto-create remote session
+  if (remoteMode && !activeSessionId && dialogue?.length >= 1) {
+    const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || "https://n22.ai";
+    const internalKey = process.env.INTERNAL_API_KEY || "";
+    let installUrl = "";
+    let remoteSessionId = "";
+    try {
+      const sessionRes = await fetch(`${dashboardUrl}/api/remote-desktop/create-public`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": internalKey },
+        body: JSON.stringify({ customerName: "Customer", roomId }),
+      });
+      const sessionData = await sessionRes.json();
+      if (sessionData.sessionId) {
+        installUrl = sessionData.installUrl;
+        remoteSessionId = sessionData.sessionId;
+      }
+    } catch (err) {
+      console.error("[process] Remote session creation failed:", err);
+    }
+
+    if (installUrl) {
+      return NextResponse.json({
+        speech: "Got it. I'll connect to your computer to help with that. Download and open the tool below, then let me know when it says session active.",
+        action: "none", done: false, highlightQuery: null, actionLabel: null,
+        remoteInstallUrl: installUrl, remoteSessionId,
+      });
+    }
+  }
 
   // Build content — minimal context
   const context: string[] = [];

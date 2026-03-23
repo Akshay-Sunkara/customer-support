@@ -395,7 +395,7 @@ export default function Home() {
   const processMessage = useCallback(async (userMessage: string, isFollowUp: boolean, ssOverride?: string|null) => {
     const screenshot = ssOverride !== undefined ? ssOverride : captureFrame();
     const res = await fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId: activeSessionIdRef.current }) });
+      body: JSON.stringify({ screenshot, userMessage, userName: "", dialogue: dialogueRef.current.slice(-20), stepHistory: stepHistoryRef.current, isFollowUp, customPrompt: customPromptRef.current, roomId: roomIdRef.current, activeSessionId: activeSessionIdRef.current, remoteMode: remoteModeRef.current }) });
     return res.json();
   }, [captureFrame]);
 
