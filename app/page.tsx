@@ -1078,36 +1078,37 @@ export default function Home() {
                       {msg.text}
                     </p>
                     {msg.remoteInstallUrl && (
-                      <a
-                        href={msg.remoteInstallUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          marginTop: 14,
-                          padding: "8px 16px",
-                          borderRadius: 8,
-                          background: "rgba(255,255,255,0.06)",
-                          color: "rgba(255,255,255,0.55)",
-                          fontSize: 12,
-                          fontWeight: 400,
-                          textDecoration: "none",
-                          border: "1px solid rgba(255,255,255,0.07)",
-                          letterSpacing: "-0.01em",
-                          transition: "all 0.2s ease",
-                          cursor: "pointer",
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.8)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.55)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"; }}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
-                          <polyline points="7 10 12 15 17 10" />
-                          <line x1="12" y1="15" x2="12" y2="3" />
-                        </svg>
-                        Download
-                      </a>
+                      <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
+                        <a
+                          href={msg.remoteInstallUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 7,
+                            padding: "9px 20px",
+                            borderRadius: 20,
+                            background: "rgba(255,255,255,0.07)",
+                            color: "rgba(255,255,255,0.55)",
+                            fontSize: 12,
+                            fontWeight: 400,
+                            textDecoration: "none",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            letterSpacing: "-0.01em",
+                            transition: "all 0.2s ease",
+                            cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.8)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(255,255,255,0.55)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
+                            <path d="M12 3v12m0 0l-4-4m4 4l4-4" />
+                            <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                          </svg>
+                          Download
+                        </a>
+                      </div>
                     )}
                     {msg.annotation && (
                       <div style={{ marginTop: 6, borderRadius: 4, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
