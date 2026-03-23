@@ -1078,7 +1078,7 @@ export default function Home() {
                       {msg.text}
                     </p>
                     {msg.remoteInstallUrl && (
-                      <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
+                      <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
                         <a
                           href={msg.remoteInstallUrl}
                           target="_blank"
