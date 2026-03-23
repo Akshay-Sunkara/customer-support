@@ -452,7 +452,11 @@ export default function Home() {
       } else if (r.cuaStarted) {
         setCuaRunning(true);
         if (r.speech) speak(r.speech);
-        startCuaPolling(r.cuaSessionId || activeSessionId);
+        // Delay polling start so the initial narration from CUA queue gets drained
+        // (avoids duplicate of the "I now have access" message)
+        setTimeout(() => {
+          startCuaPolling(r.cuaSessionId || activeSessionId);
+        }, 5000);
       } else {
         if (r.speech) speak(r.speech);
         if (r.highlightQuery && ss) {
@@ -555,21 +559,8 @@ export default function Home() {
     const defaultGreeting = "Hey, I'll be your customer support agent today. Let's get started, what's your issue?";
 
     if (remoteModeRef.current) {
-      // Remote access mode — intro + auto-create session immediately
-      const remoteGreeting = "Hi, I'm your support agent. I'll need to connect to your computer to help you. Download and open the tool below.";
-      speak(remoteGreeting);
-      // Auto-trigger remote session creation
-      fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ screenshot: null, userMessage: "[Customer needs remote access support. Create the remote session immediately.]", userName: "", dialogue: [], stepHistory: [], isFollowUp: false, customPrompt: customPromptRef.current, roomId: roomIdRef.current }) })
-        .then(r => r.json())
-        .then(data => {
-          if (data.remoteInstallUrl) {
-            if (data.remoteSessionId) { setActiveSessionId(data.remoteSessionId); activeSessionIdRef.current = data.remoteSessionId; }
-            setMessages((prev) => [...prev, { role: "ceres", text: "Download and open the support tool below.", remoteInstallUrl: data.remoteInstallUrl }]);
-            dialogueRef.current.push({ role: "ceres", text: "Download and open the support tool." });
-          }
-        })
-        .catch(() => {});
+      // Remote access mode — ask issue first, then auto-trigger remote session on first reply
+      speak("Hi, I'm your support agent. What issue can I help you with today?");
     } else if (customPromptRef.current) {
       setThinking(true);
       fetch("/api/process", { method: "POST", headers: { "Content-Type": "application/json" },
